@@ -1,6 +1,6 @@
-[![Help Scout MCP Server](https://ghrb.waren.build/banner?header=Help+Scout+MCP+Server+%21%5Bhelpscout%5D&subheader=Connect+AI+assistants+to+your+Help+Scout+data&bg=1A1A1A-4A4A4A&color=FFFFFF&headerfont=Inter&subheaderfont=Inter&support=false)](https://github.com/drewburchfield/help-scout-mcp-server)
+[![Help Scout MCP Server](https://ghrb.waren.build/banner?header=Help+Scout+MCP+Server+%21%5Bhelpscout%5D&subheader=Connect+AI+assistants+to+your+Help+Scout+data&bg=1A1A1A-4A4A4A&color=FFFFFF&headerfont=Inter&subheaderfont=Inter&support=false)](https://github.com/mkeizer/help-scout-mcp-server)
 
-[![npm version](https://badge.fury.io/js/help-scout-mcp-server.svg)](https://badge.fury.io/js/help-scout-mcp-server) [![Docker](https://img.shields.io/docker/v/drewburchfield/help-scout-mcp-server?logo=docker&label=docker)](https://hub.docker.com/r/drewburchfield/help-scout-mcp-server) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/drewburchfield/help-scout-mcp-server) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm version](https://badge.fury.io/js/help-scout-mcp-server.svg)](https://badge.fury.io/js/help-scout-mcp-server) [![Docker](https://img.shields.io/docker/v/mkeizer/help-scout-mcp-server?logo=docker&label=docker)](https://hub.docker.com/r/mkeizer/help-scout-mcp-server) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mkeizer/help-scout-mcp-server) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An [MCP server](https://modelcontextprotocol.io) that gives AI assistants direct access to your Help Scout inboxes, conversations, and threads. Search tickets, pull context, spot patterns, and get answers without leaving your editor or chat window.
 
@@ -25,7 +25,7 @@ Built by a Help Scout customer who wanted to give his support team superpowers. 
 Install the **helpscout-navigator** plugin. It auto-starts the MCP server and includes **navigation skills** that help Claude pick the right search tool for your query.
 
 1. Open Cowork and go to **Customize** > **Browse plugins** > **Personal**
-2. Click **+** > **Add marketplace from GitHub** and enter `drewburchfield/help-scout-mcp-server`
+2. Click **+** > **Add marketplace from GitHub** and enter `mkeizer/help-scout-mcp-server`
 3. Install **helpscout-navigator** from the marketplace
 4. Add your Help Scout credentials ([step-by-step guide](guides/cowork-setup.md))
 
@@ -35,7 +35,7 @@ Install the **helpscout-navigator** plugin. It auto-starts the MCP server and in
 
 **One-click install** using [Desktop Extensions](https://www.anthropic.com/engineering/desktop-extensions):
 
-1. Download the latest [`.mcpb` file from releases](https://github.com/drewburchfield/help-scout-mcp-server/releases)
+1. Download the latest [`.mcpb` file from releases](https://github.com/mkeizer/help-scout-mcp-server/releases)
 2. Double-click to install (or drag into Claude Desktop)
 3. Enter your Help Scout App ID and App Secret when prompted
 
@@ -72,7 +72,7 @@ Add to your MCP client's config file (e.g., `claude_desktop_config.json`, `.curs
 ```bash
 docker run -e HELPSCOUT_APP_ID="your-app-id" \
   -e HELPSCOUT_APP_SECRET="your-app-secret" \
-  drewburchfield/help-scout-mcp-server
+  mkeizer/help-scout-mcp-server
 ```
 
 ## Getting Your API Credentials
@@ -168,7 +168,7 @@ LOG_LEVEL=debug npx help-scout-mcp-server
 ## Development
 
 ```bash
-git clone https://github.com/drewburchfield/help-scout-mcp-server.git
+git clone https://github.com/mkeizer/help-scout-mcp-server.git
 cd help-scout-mcp-server
 npm install && npm run build
 npm start
@@ -185,10 +185,10 @@ Contributions welcome. Please ensure tests, type checking, and linting pass befo
 
 ## Support
 
-- [GitHub Issues](https://github.com/drewburchfield/help-scout-mcp-server/issues)
-- [GitHub Discussions](https://github.com/drewburchfield/help-scout-mcp-server/discussions)
+- [GitHub Issues](https://github.com/mkeizer/help-scout-mcp-server/issues)
+- [GitHub Discussions](https://github.com/mkeizer/help-scout-mcp-server/discussions)
 - [NPM Package](https://www.npmjs.com/package/help-scout-mcp-server)
-- [Changelog](https://github.com/drewburchfield/help-scout-mcp-server/releases)
+- [Changelog](https://github.com/mkeizer/help-scout-mcp-server/releases)
 
 ## License
 
