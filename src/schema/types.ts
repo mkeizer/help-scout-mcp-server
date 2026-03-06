@@ -234,6 +234,60 @@ export const GetHappinessRatingsInputSchema = ReportBaseInputSchema.extend({
   rating: z.enum(['great', 'ok', 'not-good']).optional().describe('Filter by rating type'),
 });
 
+// Docs API Input Schemas
+export const ListDocsCategoriesInputSchema = z.object({
+  collectionId: z.string().optional().describe('Collection ID (uses default if omitted)'),
+  sort: z.enum(['order', 'name', 'articleCount', 'createdAt', 'updatedAt']).default('order'),
+  order: z.enum(['asc', 'desc']).default('asc'),
+});
+
+export const ListDocsArticlesInputSchema = z.object({
+  collectionId: z.string().optional().describe('Collection ID (uses default if omitted)'),
+  categoryId: z.string().optional().describe('Filter by category ID'),
+  status: z.enum(['all', 'published', 'notpublished']).default('all'),
+  sort: z.enum(['number', 'status', 'name', 'popularity', 'createdAt', 'updatedAt']).default('updatedAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+  page: z.number().min(1).default(1),
+  pageSize: z.number().min(1).max(100).default(50),
+});
+
+export const SearchDocsArticlesInputSchema = z.object({
+  query: z.string().min(1, 'Search query is required'),
+  collectionId: z.string().optional().describe('Filter by collection ID'),
+  status: z.enum(['all', 'published', 'notpublished']).default('all'),
+  page: z.number().min(1).default(1),
+});
+
+export const GetDocsArticleInputSchema = z.object({
+  articleId: z.string().min(1, 'Article ID is required'),
+});
+
+export const CreateDocsArticleInputSchema = z.object({
+  collectionId: z.string().optional().describe('Collection ID (uses default if omitted)'),
+  name: z.string().min(1, 'Article name is required'),
+  text: z.string().min(1, 'Article content is required (HTML or plain text)'),
+  categories: z.array(z.string()).optional().describe('Category IDs to assign'),
+  status: z.enum(['published', 'notpublished']).default('published'),
+  slug: z.string().optional().describe('URL slug (auto-generated if omitted)'),
+  keywords: z.array(z.string()).optional().describe('SEO keywords'),
+  related: z.array(z.string()).optional().describe('Related article IDs'),
+});
+
+export const UpdateDocsArticleInputSchema = z.object({
+  articleId: z.string().min(1, 'Article ID is required'),
+  name: z.string().optional(),
+  text: z.string().optional(),
+  categories: z.array(z.string()).optional().describe('Category IDs (omit to keep, null to remove all)'),
+  status: z.enum(['published', 'notpublished']).optional(),
+  slug: z.string().optional(),
+  keywords: z.array(z.string()).optional(),
+  related: z.array(z.string()).optional(),
+});
+
+export const DeleteDocsArticleInputSchema = z.object({
+  articleId: z.string().min(1, 'Article ID is required'),
+});
+
 // Response Types
 export const ServerTimeSchema = z.object({
   isoTime: z.string(),
@@ -273,3 +327,10 @@ export type GetFirstResponseTimeReportInput = z.infer<typeof GetFirstResponseTim
 export type GetResolutionTimeReportInput = z.infer<typeof GetResolutionTimeReportInputSchema>;
 export type GetHappinessReportInput = z.infer<typeof GetHappinessReportInputSchema>;
 export type GetHappinessRatingsInput = z.infer<typeof GetHappinessRatingsInputSchema>;
+export type ListDocsCategoriesInput = z.infer<typeof ListDocsCategoriesInputSchema>;
+export type ListDocsArticlesInput = z.infer<typeof ListDocsArticlesInputSchema>;
+export type SearchDocsArticlesInput = z.infer<typeof SearchDocsArticlesInputSchema>;
+export type GetDocsArticleInput = z.infer<typeof GetDocsArticleInputSchema>;
+export type CreateDocsArticleInput = z.infer<typeof CreateDocsArticleInputSchema>;
+export type UpdateDocsArticleInput = z.infer<typeof UpdateDocsArticleInputSchema>;
+export type DeleteDocsArticleInput = z.infer<typeof DeleteDocsArticleInputSchema>;

@@ -13,6 +13,10 @@ export interface Config {
     baseUrl: string;
     defaultInboxId?: string; // Optional: default inbox for scoped searches
   };
+  docs: {
+    apiKey: string;          // Docs API key (HTTP Basic Auth)
+    collectionId: string;    // Default collection ID
+  };
   cache: {
     ttlSeconds: number;
     maxSize: number;
@@ -40,6 +44,10 @@ export const config: Config = {
     clientSecret: process.env.HELPSCOUT_APP_SECRET || process.env.HELPSCOUT_CLIENT_SECRET || '',
     baseUrl: process.env.HELPSCOUT_BASE_URL || 'https://api.helpscout.net/v2/',
     defaultInboxId: process.env.HELPSCOUT_DEFAULT_INBOX_ID,
+  },
+  docs: {
+    apiKey: process.env.HELPSCOUT_DOCS_API_KEY || '',
+    collectionId: process.env.HELPSCOUT_DOCS_COLLECTION_ID || '',
   },
   cache: {
     ttlSeconds: parseInt(process.env.CACHE_TTL_SECONDS || '300', 10),

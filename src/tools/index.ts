@@ -61,6 +61,7 @@ import {
   UpdateConversationTagsInputSchema,
 } from '../schema/types.js';
 import { reportToolHandler } from './reports.js';
+import { docsToolHandler } from './docs.js';
 
 export class ToolHandler {
   private callHistory: string[] = [];
@@ -660,6 +661,8 @@ export class ToolHandler {
           required: ['start', 'end'],
         },
       },
+      // Docs API tools (only included if HELPSCOUT_DOCS_API_KEY is configured)
+      ...docsToolHandler.listTools(),
     ];
   }
 
@@ -786,6 +789,28 @@ export class ToolHandler {
           break;
         case 'getHappinessRatings':
           result = await reportToolHandler.getHappinessRatings(request.params.arguments || {});
+          break;
+        // Docs API tools
+        case 'listDocsCategories':
+          result = await docsToolHandler.listDocsCategories(request.params.arguments || {});
+          break;
+        case 'listDocsArticles':
+          result = await docsToolHandler.listDocsArticles(request.params.arguments || {});
+          break;
+        case 'searchDocsArticles':
+          result = await docsToolHandler.searchDocsArticles(request.params.arguments || {});
+          break;
+        case 'getDocsArticle':
+          result = await docsToolHandler.getDocsArticle(request.params.arguments || {});
+          break;
+        case 'createDocsArticle':
+          result = await docsToolHandler.createDocsArticle(request.params.arguments || {});
+          break;
+        case 'updateDocsArticle':
+          result = await docsToolHandler.updateDocsArticle(request.params.arguments || {});
+          break;
+        case 'deleteDocsArticle':
+          result = await docsToolHandler.deleteDocsArticle(request.params.arguments || {});
           break;
         default:
           throw new Error(`Unknown tool: ${request.params.name}`);
