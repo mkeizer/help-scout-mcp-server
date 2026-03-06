@@ -18,7 +18,10 @@
     "listAllInboxes",
     "advancedConversationSearch",
     "comprehensiveConversationSearch",
-    "structuredConversationFilter"
+    "structuredConversationFilter",
+    "createReply",
+    "createNote",
+    "updateConversationStatus"
   ],
   "prompts": [
     "search-last-7-days",

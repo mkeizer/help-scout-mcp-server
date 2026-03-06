@@ -55,7 +55,11 @@ import {
   AdvancedConversationSearchInputSchema,
   MultiStatusConversationSearchInputSchema,
   StructuredConversationFilterInputSchema,
+  CreateReplyInputSchema,
+  CreateNoteInputSchema,
+  UpdateConversationStatusInputSchema,
 } from '../schema/types.js';
+import { reportToolHandler } from './reports.js';
 
 export class ToolHandler {
   private callHistory: string[] = [];
@@ -408,6 +412,241 @@ export class ToolHandler {
           },
         },
       },
+      {
+        name: 'createReply',
+        description: 'Reply to a conversation. Defaults to draft mode so the reply can be reviewed before sending.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: { type: 'string', description: 'The conversation ID to reply to' },
+            text: { type: 'string', description: 'Reply body (HTML supported)' },
+            customer: { type: 'string', description: 'Customer email address the reply is sent to' },
+            draft: { type: 'boolean', description: 'Create as draft (true, default) or send immediately (false)', default: true },
+            cc: { type: 'array', items: { type: 'string' }, description: 'CC email addresses' },
+            bcc: { type: 'array', items: { type: 'string' }, description: 'BCC email addresses' },
+          },
+          required: ['conversationId', 'text', 'customer'],
+        },
+      },
+      {
+        name: 'createNote',
+        description: 'Add an internal note to a conversation. Notes are only visible to staff, not customers.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: { type: 'string', description: 'The conversation ID to add a note to' },
+            text: { type: 'string', description: 'Note body (HTML supported)' },
+          },
+          required: ['conversationId', 'text'],
+        },
+      },
+      {
+        name: 'updateConversationStatus',
+        description: 'Change the status of a conversation (active, pending, or closed).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: { type: 'string', description: 'The conversation ID to update' },
+            status: { type: 'string', enum: ['active', 'pending', 'closed'], description: 'New status for the conversation' },
+          },
+          required: ['conversationId', 'status'],
+        },
+      },
+      // --- Report Tools ---
+      {
+        name: 'getCompanyReport',
+        description: 'Overall company metrics (customers helped, closed conversations, replies sent, per-user stats). Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time', description: 'Previous period start for comparison' },
+            previousEnd: { type: 'string', format: 'date-time', description: 'Previous period end for comparison' },
+            mailboxes: { type: 'string', description: 'Comma-separated mailbox IDs' },
+            tags: { type: 'string', description: 'Comma-separated tag IDs' },
+            types: { type: 'string', description: 'Comma-separated conversation types (email, phone, chat)' },
+            folders: { type: 'string', description: 'Comma-separated folder IDs' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getCompanyCustomersHelped',
+        description: 'Customers helped over time, grouped by day/week/month. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+            viewBy: { type: 'string', enum: ['day', 'week', 'month'], description: 'Time grouping for the data' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getCompanyDrilldown',
+        description: 'Drill into company conversations by metric range. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+            page: { type: 'number', minimum: 1, description: 'Page number' },
+            rows: { type: 'number', minimum: 1, maximum: 100, description: 'Results per page' },
+            range: { type: 'string', description: 'Metric range to drill into' },
+            rangeId: { type: 'number', description: 'Range ID for specific metric' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getConversationsReport',
+        description: 'Conversation volume, busiest day/time, top tags, and top customers. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getProductivityReport',
+        description: 'Resolution time, first response time, replies to resolve, and handle time. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+            officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getEmailReport',
+        description: 'Email volume, resolution time, and response times. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            folders: { type: 'string' },
+            officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getFirstResponseTimeReport',
+        description: 'First response time over time, grouped by day/week/month. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+            officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+            viewBy: { type: 'string', enum: ['day', 'week', 'month'], description: 'Time grouping' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getResolutionTimeReport',
+        description: 'Resolution time over time, grouped by day/week/month. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+            officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+            viewBy: { type: 'string', enum: ['day', 'week', 'month'], description: 'Time grouping' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getHappinessReport',
+        description: 'Customer satisfaction scores (great/ok/not-good percentages). Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+          },
+          required: ['start', 'end'],
+        },
+      },
+      {
+        name: 'getHappinessRatings',
+        description: 'Individual satisfaction ratings with comments, filterable by rating type. Requires start and end dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+            end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+            previousStart: { type: 'string', format: 'date-time' },
+            previousEnd: { type: 'string', format: 'date-time' },
+            mailboxes: { type: 'string' },
+            tags: { type: 'string' },
+            types: { type: 'string' },
+            folders: { type: 'string' },
+            page: { type: 'number', minimum: 1, description: 'Page number' },
+            sortField: { type: 'string', enum: ['rating', 'date'], description: 'Sort field' },
+            sortOrder: { type: 'string', enum: ['asc', 'desc'], description: 'Sort order' },
+            rating: { type: 'string', enum: ['great', 'ok', 'not-good'], description: 'Filter by rating type' },
+          },
+          required: ['start', 'end'],
+        },
+      },
     ];
   }
 
@@ -491,6 +730,46 @@ export class ToolHandler {
           break;
         case 'structuredConversationFilter':
           result = await this.structuredConversationFilter(request.params.arguments || {});
+          break;
+        case 'createReply':
+          result = await this.createReply(request.params.arguments || {});
+          break;
+        case 'createNote':
+          result = await this.createNote(request.params.arguments || {});
+          break;
+        case 'updateConversationStatus':
+          result = await this.updateConversationStatus(request.params.arguments || {});
+          break;
+        // Report tools
+        case 'getCompanyReport':
+          result = await reportToolHandler.getCompanyReport(request.params.arguments || {});
+          break;
+        case 'getCompanyCustomersHelped':
+          result = await reportToolHandler.getCompanyCustomersHelped(request.params.arguments || {});
+          break;
+        case 'getCompanyDrilldown':
+          result = await reportToolHandler.getCompanyDrilldown(request.params.arguments || {});
+          break;
+        case 'getConversationsReport':
+          result = await reportToolHandler.getConversationsReport(request.params.arguments || {});
+          break;
+        case 'getProductivityReport':
+          result = await reportToolHandler.getProductivityReport(request.params.arguments || {});
+          break;
+        case 'getEmailReport':
+          result = await reportToolHandler.getEmailReport(request.params.arguments || {});
+          break;
+        case 'getFirstResponseTimeReport':
+          result = await reportToolHandler.getFirstResponseTimeReport(request.params.arguments || {});
+          break;
+        case 'getResolutionTimeReport':
+          result = await reportToolHandler.getResolutionTimeReport(request.params.arguments || {});
+          break;
+        case 'getHappinessReport':
+          result = await reportToolHandler.getHappinessReport(request.params.arguments || {});
+          break;
+        case 'getHappinessRatings':
+          result = await reportToolHandler.getHappinessRatings(request.params.arguments || {});
           break;
         default:
           throw new Error(`Unknown tool: ${request.params.name}`);
@@ -1433,6 +1712,80 @@ export class ToolHandler {
           nextCursor: response._links?.next?.href,
           clientSideFiltering: clientSideFiltered ? `createdBefore filter removed ${originalCount - conversations.length} of ${originalCount} results` : undefined,
           note: 'Structural filtering applied. For content-based search or rep activity, use comprehensiveConversationSearch.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async createReply(args: unknown): Promise<CallToolResult> {
+    const input = CreateReplyInputSchema.parse(args);
+
+    const body: Record<string, unknown> = {
+      customer: { email: input.customer },
+      text: input.text,
+      draft: input.draft,
+    };
+    if (input.cc) body.cc = input.cc;
+    if (input.bcc) body.bcc = input.bcc;
+
+    await helpScoutClient.post(
+      `/conversations/${input.conversationId}/reply`,
+      body
+    );
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          action: input.draft ? 'draft_created' : 'reply_sent',
+          message: input.draft
+            ? 'Draft reply created. Review and send it from the Help Scout UI.'
+            : 'Reply sent to customer.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async createNote(args: unknown): Promise<CallToolResult> {
+    const input = CreateNoteInputSchema.parse(args);
+
+    await helpScoutClient.post(
+      `/conversations/${input.conversationId}/notes`,
+      { text: input.text }
+    );
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          action: 'note_created',
+          message: 'Internal note added to conversation.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async updateConversationStatus(args: unknown): Promise<CallToolResult> {
+    const input = UpdateConversationStatusInputSchema.parse(args);
+
+    await helpScoutClient.patch(
+      `/conversations/${input.conversationId}`,
+      { op: 'replace', path: '/status', value: input.status }
+    );
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          action: 'status_updated',
+          newStatus: input.status,
+          message: `Conversation status changed to ${input.status}.`,
         }, null, 2),
       }],
     };

@@ -155,6 +155,80 @@ export const StructuredConversationFilterInputSchema = z.object({
   { message: 'Must use at least one unique field: assignedTo, folderId, customerIds, conversationNumber, or unique sorting. For content search, use comprehensiveConversationSearch.' }
 );
 
+// Write Tool Input Schemas
+export const CreateReplyInputSchema = z.object({
+  conversationId: z.string(),
+  text: z.string().min(1, 'Reply text is required'),
+  customer: z.string().email('Must be a valid email address'),
+  draft: z.boolean().default(true),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+});
+
+export const CreateNoteInputSchema = z.object({
+  conversationId: z.string(),
+  text: z.string().min(1, 'Note text is required'),
+});
+
+export const UpdateConversationStatusInputSchema = z.object({
+  conversationId: z.string(),
+  status: z.enum(['active', 'pending', 'closed']),
+});
+
+// Report Input Schemas
+export const ReportBaseInputSchema = z.object({
+  start: z.string().describe('Start date (ISO8601, required)'),
+  end: z.string().describe('End date (ISO8601, required)'),
+  previousStart: z.string().optional().describe('Previous period start for comparison'),
+  previousEnd: z.string().optional().describe('Previous period end for comparison'),
+  mailboxes: z.string().optional().describe('Comma-separated mailbox IDs'),
+  tags: z.string().optional().describe('Comma-separated tag IDs'),
+  types: z.string().optional().describe('Comma-separated conversation types (email, phone, chat)'),
+  folders: z.string().optional().describe('Comma-separated folder IDs'),
+});
+
+export const GetCompanyReportInputSchema = ReportBaseInputSchema;
+
+export const GetCompanyCustomersHelpedInputSchema = ReportBaseInputSchema.extend({
+  viewBy: z.enum(['day', 'week', 'month']).optional().describe('Time grouping for the data'),
+});
+
+export const GetCompanyDrilldownInputSchema = ReportBaseInputSchema.extend({
+  page: z.number().min(1).optional().describe('Page number'),
+  rows: z.number().min(1).max(100).optional().describe('Results per page'),
+  range: z.string().optional().describe('Metric range to drill into'),
+  rangeId: z.number().optional().describe('Range ID for specific metric'),
+});
+
+export const GetConversationsReportInputSchema = ReportBaseInputSchema;
+
+export const GetProductivityReportInputSchema = ReportBaseInputSchema.extend({
+  officeHours: z.boolean().optional().describe('Calculate times using office hours only'),
+});
+
+export const GetEmailReportInputSchema = ReportBaseInputSchema.omit({ types: true }).extend({
+  officeHours: z.boolean().optional().describe('Calculate times using office hours only'),
+});
+
+export const GetFirstResponseTimeReportInputSchema = ReportBaseInputSchema.extend({
+  officeHours: z.boolean().optional().describe('Calculate times using office hours only'),
+  viewBy: z.enum(['day', 'week', 'month']).optional().describe('Time grouping for the data'),
+});
+
+export const GetResolutionTimeReportInputSchema = ReportBaseInputSchema.extend({
+  officeHours: z.boolean().optional().describe('Calculate times using office hours only'),
+  viewBy: z.enum(['day', 'week', 'month']).optional().describe('Time grouping for the data'),
+});
+
+export const GetHappinessReportInputSchema = ReportBaseInputSchema;
+
+export const GetHappinessRatingsInputSchema = ReportBaseInputSchema.extend({
+  page: z.number().min(1).optional().describe('Page number'),
+  sortField: z.enum(['rating', 'date']).optional().describe('Sort field'),
+  sortOrder: z.enum(['asc', 'desc']).optional().describe('Sort order'),
+  rating: z.enum(['great', 'ok', 'not-good']).optional().describe('Filter by rating type'),
+});
+
 // Response Types
 export const ServerTimeSchema = z.object({
   isoTime: z.string(),
@@ -179,4 +253,18 @@ export type GetConversationSummaryInput = z.infer<typeof GetConversationSummaryI
 export type AdvancedConversationSearchInput = z.infer<typeof AdvancedConversationSearchInputSchema>;
 export type MultiStatusConversationSearchInput = z.infer<typeof MultiStatusConversationSearchInputSchema>;
 export type ServerTime = z.infer<typeof ServerTimeSchema>;
+export type CreateReplyInput = z.infer<typeof CreateReplyInputSchema>;
+export type CreateNoteInput = z.infer<typeof CreateNoteInputSchema>;
+export type UpdateConversationStatusInput = z.infer<typeof UpdateConversationStatusInputSchema>;
 export type ApiError = z.infer<typeof ErrorSchema>;
+export type ReportBaseInput = z.infer<typeof ReportBaseInputSchema>;
+export type GetCompanyReportInput = z.infer<typeof GetCompanyReportInputSchema>;
+export type GetCompanyCustomersHelpedInput = z.infer<typeof GetCompanyCustomersHelpedInputSchema>;
+export type GetCompanyDrilldownInput = z.infer<typeof GetCompanyDrilldownInputSchema>;
+export type GetConversationsReportInput = z.infer<typeof GetConversationsReportInputSchema>;
+export type GetProductivityReportInput = z.infer<typeof GetProductivityReportInputSchema>;
+export type GetEmailReportInput = z.infer<typeof GetEmailReportInputSchema>;
+export type GetFirstResponseTimeReportInput = z.infer<typeof GetFirstResponseTimeReportInputSchema>;
+export type GetResolutionTimeReportInput = z.infer<typeof GetResolutionTimeReportInputSchema>;
+export type GetHappinessReportInput = z.infer<typeof GetHappinessReportInputSchema>;
+export type GetHappinessRatingsInput = z.infer<typeof GetHappinessRatingsInputSchema>;

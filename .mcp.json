@@ -4,9 +4,9 @@
       "command": "node",
       "args": ["dist/index.js"],
       "env": {
-        "HELPSCOUT_APP_ID": "${HELPSCOUT_APP_ID}",
-        "HELPSCOUT_APP_SECRET": "${HELPSCOUT_APP_SECRET}",
-        "REDACT_MESSAGE_CONTENT": "${REDACT_MESSAGE_CONTENT:-false}"
+        "HELPSCOUT_APP_ID": "UqoZlXCZhVgB4Qu9a1xb1oKFFbRtVldL",
+        "HELPSCOUT_APP_SECRET": "ubDJIly3318oy3N0BIwB2ufryVPwfPWz",
+        "REDACT_MESSAGE_CONTENT": "false"
       }
     }
   }

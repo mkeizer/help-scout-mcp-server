@@ -90,16 +90,32 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 | Lookup by ticket number (#12345) | structuredConversationFilter |
 | Get full conversation thread | getThreads |
 | Quick conversation preview | getConversationSummary |
+| Reply to a conversation (draft by default) | createReply |
+| Add internal staff note | createNote |
+| Change conversation status | updateConversationStatus |
+| Company overview metrics | getCompanyReport |
+| Customers helped over time | getCompanyCustomersHelped |
+| Drill into company metrics | getCompanyDrilldown |
+| Conversation volume & trends | getConversationsReport |
+| Productivity (FRT, resolution time) | getProductivityReport |
+| Email-specific metrics | getEmailReport |
+| First response time trends | getFirstResponseTimeReport |
+| Resolution time trends | getResolutionTimeReport |
+| Satisfaction scores overview | getHappinessReport |
+| Individual satisfaction ratings | getHappinessRatings |
 
 ## Workflow Patterns
 - **Ticket investigation**: searchConversations → getConversationSummary → getThreads
 - **Keyword research**: comprehensiveConversationSearch → getThreads for details
 - **Customer history**: advancedConversationSearch with customerEmail → getThreads
+- **Performance review**: getCompanyReport → getProductivityReport → getHappinessReport
+- **Satisfaction analysis**: getHappinessReport → getHappinessRatings (filter by not-good)
 
 ## Notes
 - Always use inbox IDs from the list above (not names)
 - All search tools default to active+pending+closed statuses
-- Use getServerTime for date-relative queries`;
+- Use getServerTime for date-relative queries
+- All report tools require start and end dates in ISO8601 format`;
 
       logger.info('Inbox discovery successful', { inboxCount: inboxes.length });
       return { instructions, inboxes };

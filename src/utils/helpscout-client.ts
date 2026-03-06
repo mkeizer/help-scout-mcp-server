@@ -436,6 +436,48 @@ export class HelpScoutClient {
     return 300; // Default 5 minutes
   }
 
+  async post<T>(endpoint: string, data: Record<string, unknown>): Promise<T> {
+    const response = await this.executeWithRetry<T>(() =>
+      this.client.post<T>(endpoint, data)
+    );
+    if (response.status >= 400) {
+      throw this.transformError(Object.assign(new Error(`Request failed with status ${response.status}`), {
+        response,
+        config: response.config,
+        isAxiosError: true,
+      }) as unknown as AxiosError);
+    }
+    return response.data;
+  }
+
+  async put<T>(endpoint: string, data: Record<string, unknown>): Promise<T> {
+    const response = await this.executeWithRetry<T>(() =>
+      this.client.put<T>(endpoint, data)
+    );
+    if (response.status >= 400) {
+      throw this.transformError(Object.assign(new Error(`Request failed with status ${response.status}`), {
+        response,
+        config: response.config,
+        isAxiosError: true,
+      }) as unknown as AxiosError);
+    }
+    return response.data;
+  }
+
+  async patch<T>(endpoint: string, data: Record<string, unknown>): Promise<T> {
+    const response = await this.executeWithRetry<T>(() =>
+      this.client.patch<T>(endpoint, data)
+    );
+    if (response.status >= 400) {
+      throw this.transformError(Object.assign(new Error(`Request failed with status ${response.status}`), {
+        response,
+        config: response.config,
+        isAxiosError: true,
+      }) as unknown as AxiosError);
+    }
+    return response.data;
+  }
+
   async testConnection(): Promise<boolean> {
     try {
       await this.get('/mailboxes', { page: 1, size: 1 });
