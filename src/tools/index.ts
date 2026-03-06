@@ -58,6 +58,7 @@ import {
   CreateReplyInputSchema,
   CreateNoteInputSchema,
   UpdateConversationStatusInputSchema,
+  UpdateConversationTagsInputSchema,
 } from '../schema/types.js';
 import { reportToolHandler } from './reports.js';
 
@@ -452,6 +453,18 @@ export class ToolHandler {
           required: ['conversationId', 'status'],
         },
       },
+      {
+        name: 'updateConversationTags',
+        description: 'Update tags on a conversation. Replaces all existing tags with the provided list. Send empty array to remove all tags. Non-existing tags will be created automatically.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: { type: 'string', description: 'The conversation ID to update' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'List of tags to apply. Non-existing tags will be created. Send empty array to remove all tags.' },
+          },
+          required: ['conversationId', 'tags'],
+        },
+      },
       // --- Report Tools ---
       {
         name: 'getCompanyReport',
@@ -739,6 +752,9 @@ export class ToolHandler {
           break;
         case 'updateConversationStatus':
           result = await this.updateConversationStatus(request.params.arguments || {});
+          break;
+        case 'updateConversationTags':
+          result = await this.updateConversationTags(request.params.arguments || {});
           break;
         // Report tools
         case 'getCompanyReport':
@@ -1786,6 +1802,30 @@ export class ToolHandler {
           action: 'status_updated',
           newStatus: input.status,
           message: `Conversation status changed to ${input.status}.`,
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async updateConversationTags(args: unknown): Promise<CallToolResult> {
+    const input = UpdateConversationTagsInputSchema.parse(args);
+
+    await helpScoutClient.put(
+      `/conversations/${input.conversationId}/tags`,
+      { tags: input.tags }
+    );
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          action: 'tags_updated',
+          tags: input.tags,
+          message: input.tags.length > 0
+            ? `Tags updated: ${input.tags.join(', ')}`
+            : 'All tags removed from conversation.',
         }, null, 2),
       }],
     };

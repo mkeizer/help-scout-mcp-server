@@ -175,6 +175,11 @@ export const UpdateConversationStatusInputSchema = z.object({
   status: z.enum(['active', 'pending', 'closed']),
 });
 
+export const UpdateConversationTagsInputSchema = z.object({
+  conversationId: z.string(),
+  tags: z.array(z.string()).describe('List of tags to apply. Non-existing tags will be created. Send empty array to remove all tags.'),
+});
+
 // Report Input Schemas
 export const ReportBaseInputSchema = z.object({
   start: z.string().describe('Start date (ISO8601, required)'),
