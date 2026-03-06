@@ -10,7 +10,11 @@ Built by a Help Scout customer who wanted to give his support team superpowers. 
 
 - **Search conversations** by keyword, date range, status, tag, email domain, or ticket number
 - **Pull full thread history** into context before drafting a reply
+- **Reply to conversations** with draft mode for safe review before sending
+- **Add internal notes** visible only to staff
+- **Update conversation status** (active, pending, closed)
 - **Get conversation summaries** with the original customer message and latest staff response
+- **Run reports** on company metrics, productivity, happiness, response times, and more
 - **Monitor inbox activity** across multiple inboxes with a single query
 - **Stay compliant** with optional PII redaction and scoped inbox access
 
@@ -74,7 +78,7 @@ docker run -e HELPSCOUT_APP_ID="your-app-id" \
 ## Getting Your API Credentials
 
 1. Go to **Help Scout** > **My Apps** > **Create Private App**
-2. Select at minimum: **Read** access to Mailboxes and Conversations
+2. Select at minimum: **Read** and **Write** access to Mailboxes and Conversations (write is needed for replies, notes, and status updates)
 3. Copy your **App ID** and **App Secret**
 
 > Help Scout uses OAuth2 Client Credentials flow exclusively. Personal Access Tokens are not supported.
@@ -98,6 +102,13 @@ Alternative names `HELPSCOUT_CLIENT_ID` / `HELPSCOUT_CLIENT_SECRET` and legacy `
 | Complex filters | `advancedConversationSearch` | "All @acme.com conversations tagged urgent" |
 | Quick conversation overview | `getConversationSummary` | "Summarize this conversation" |
 | Full message history | `getThreads` | "Show me the complete thread" |
+| Reply to a conversation | `createReply` | "Draft a reply to this customer" |
+| Add internal note | `createNote` | "Add a note about the DNS issue" |
+| Change conversation status | `updateConversationStatus` | "Close this conversation" |
+| Company overview metrics | `getCompanyReport` | "How many conversations did we handle this month?" |
+| Productivity metrics | `getProductivityReport` | "What's our average first response time?" |
+| Customer satisfaction | `getHappinessReport` | "Show satisfaction scores for Q1" |
+| Conversation volume | `getConversationsReport` | "Conversation trends over the last 30 days" |
 | Current server time | `getServerTime` | Used for time-relative searches |
 
 Inboxes are auto-discovered when the server connects. AI agents get inbox IDs in their instructions automatically, so no lookup step is needed.
