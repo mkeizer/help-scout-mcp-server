@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "helpscout": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "env": {
+        "HELPSCOUT_APP_ID": "your-app-id",
+        "HELPSCOUT_APP_SECRET": "your-app-secret",
+        "REDACT_MESSAGE_CONTENT": "false"
+      }
+    },
+    "dnsscan": {
+      "type": "http",
+      "url": "https://dnsscan.nl/mcp",
+      "headers": {
+        "Authorization": "Bearer your-dnsscan-api-key"
+      }
+    }
+  }
+}

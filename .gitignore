@@ -9,6 +9,9 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# MCP config (contains credentials)
+.mcp.json
+
 # Build output
 dist/
 build/
