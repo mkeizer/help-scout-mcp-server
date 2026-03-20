@@ -45,7 +45,7 @@ export const ConversationSchema = z.object({
 
 export const ThreadSchema = z.object({
   id: z.number(),
-  type: z.enum(['customer', 'note', 'lineitem', 'phone', 'message']),
+  type: z.enum(['customer', 'note', 'lineitem', 'phone', 'message', 'forwardparent', 'forwardchild', 'chat', 'beaconchat']),
   status: z.enum(['active', 'pending', 'closed', 'spam']),
   state: z.enum(['published', 'draft', 'hidden']),
   action: z.object({
@@ -53,6 +53,7 @@ export const ThreadSchema = z.object({
     text: z.string(),
   }).nullable(),
   body: z.string(),
+  linkedConversationId: z.number().nullable().optional(),
   source: z.object({
     type: z.string(),
     via: z.string(),
@@ -104,6 +105,11 @@ export const GetThreadsInputSchema = z.object({
   conversationId: z.string(),
   limit: z.number().min(1).max(200).default(200),
   cursor: z.string().optional(),
+});
+
+export const GetOriginalSourceInputSchema = z.object({
+  conversationId: z.string(),
+  threadId: z.string(),
 });
 
 export const GetConversationSummaryInputSchema = z.object({
@@ -161,6 +167,7 @@ export const CreateReplyInputSchema = z.object({
   text: z.string().min(1, 'Reply text is required'),
   customer: z.string().email('Must be a valid email address'),
   draft: z.boolean().default(true),
+  status: z.enum(['active', 'closed', 'pending']).optional(),
   cc: z.array(z.string().email()).optional(),
   bcc: z.array(z.string().email()).optional(),
 });

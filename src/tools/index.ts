@@ -51,6 +51,7 @@ import {
   SearchInboxesInputSchema,
   SearchConversationsInputSchema,
   GetThreadsInputSchema,
+  GetOriginalSourceInputSchema,
   GetConversationSummaryInputSchema,
   AdvancedConversationSearchInputSchema,
   MultiStatusConversationSearchInputSchema,
@@ -249,6 +250,24 @@ export class ToolHandler {
         },
       },
       {
+        name: 'getOriginalSource',
+        description: 'Get the original email source (RFC 822) of a thread message, including full SMTP headers (Received, DKIM-Signature, SPF, DMARC, etc). Useful for diagnosing email delivery issues.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: {
+              type: 'string',
+              description: 'The conversation ID',
+            },
+            threadId: {
+              type: 'string',
+              description: 'The thread ID to get original source for (get thread IDs from getThreads)',
+            },
+          },
+          required: ['conversationId', 'threadId'],
+        },
+      },
+      {
         name: 'getServerTime',
         description: 'Get current server timestamp. Use before date-relative searches to calculate time ranges.',
         inputSchema: {
@@ -424,6 +443,7 @@ export class ToolHandler {
             text: { type: 'string', description: 'Reply body (HTML supported)' },
             customer: { type: 'string', description: 'Customer email address the reply is sent to' },
             draft: { type: 'boolean', description: 'Create as draft (true, default) or send immediately (false)', default: true },
+            status: { type: 'string', enum: ['active', 'closed', 'pending'], description: 'Set conversation status when reply is sent. For drafts, status is applied when the draft is sent from the UI.' },
             cc: { type: 'array', items: { type: 'string' }, description: 'CC email addresses' },
             bcc: { type: 'array', items: { type: 'string' }, description: 'BCC email addresses' },
           },
@@ -731,6 +751,9 @@ export class ToolHandler {
           break;
         case 'getThreads':
           result = await this.getThreads(request.params.arguments || {});
+          break;
+        case 'getOriginalSource':
+          result = await this.getOriginalSource(request.params.arguments || {});
           break;
         case 'getServerTime':
           result = await this.getServerTime();
@@ -1138,14 +1161,39 @@ export class ToolHandler {
     const threads = threadsResponse._embedded?.threads || [];
     const customerThreads = threads.filter(t => t.type === 'customer');
     const staffThreads = threads.filter(t => t.type === 'message' && t.createdBy);
-    
-    const firstCustomerMessage = customerThreads.sort((a, b) => 
+
+    const firstCustomerMessage = customerThreads.sort((a, b) =>
       new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
     )[0];
-    
-    const latestStaffReply = staffThreads.sort((a, b) => 
+
+    const latestStaffReply = staffThreads.sort((a, b) =>
       new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     )[0];
+
+    // Extract linked conversation IDs from threads (forwardparent/forwardchild, lineitem references)
+    const linkedConversationIds = [
+      ...new Set(
+        threads
+          .filter((t: any) => t.linkedConversationId)
+          .map((t: any) => t.linkedConversationId as number)
+      ),
+    ];
+
+    // Extract lineitem threads (state changes like assignment, status, linked conversations)
+    const lineItems = threads
+      .filter(t => t.type === 'lineitem')
+      .map(t => ({
+        id: t.id,
+        action: t.action,
+        body: t.body,
+        createdAt: t.createdAt,
+        createdBy: t.createdBy,
+      }));
+
+    // Check conversation _links for cross-references (raw API response may include these)
+    const conversationLinks = (conversation as any)._links || {};
+    const closedBy = (conversation as any).closedBy || null;
+    const closedAt = (conversation as any).closedAt || null;
 
     const summary = {
       conversation: {
@@ -1154,10 +1202,14 @@ export class ToolHandler {
         status: conversation.status,
         createdAt: conversation.createdAt,
         updatedAt: conversation.updatedAt,
+        closedAt,
+        closedBy,
         customer: conversation.customer,
         assignee: conversation.assignee,
         tags: conversation.tags,
       },
+      linkedConversationIds: linkedConversationIds.length > 0 ? linkedConversationIds : undefined,
+      lineItems: lineItems.length > 0 ? lineItems : undefined,
       firstCustomerMessage: firstCustomerMessage ? {
         id: firstCustomerMessage.id,
         body: config.security.allowPii ? firstCustomerMessage.body : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
@@ -1210,6 +1262,27 @@ export class ToolHandler {
             threads: processedThreads,
             pagination: response.page,
             nextCursor: response._links?.next?.href,
+          }, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async getOriginalSource(args: unknown): Promise<CallToolResult> {
+    const input = GetOriginalSourceInputSchema.parse(args);
+
+    const response = await helpScoutClient.get<{ data: string }>(
+      `/conversations/${input.conversationId}/threads/${input.threadId}/original-source`
+    );
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            conversationId: input.conversationId,
+            threadId: input.threadId,
+            originalSource: response.data || response,
           }, null, 2),
         },
       ],
@@ -1766,6 +1839,7 @@ export class ToolHandler {
       text: input.text,
       draft: input.draft,
     };
+    if (input.status) body.status = input.status;
     if (input.cc) body.cc = input.cc;
     if (input.bcc) body.bcc = input.bcc;
 
