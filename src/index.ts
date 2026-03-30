@@ -30,7 +30,7 @@ export class HelpScoutMCPServer {
     this.server = new Server(
       {
         name: 'helpscout-search',
-        version: '1.6.2',
+        version: '1.7.0',
       },
       {
         capabilities: {
@@ -76,7 +76,7 @@ export class HelpScoutMCPServer {
         `  - "${inbox.name}" (ID: ${inbox.id})`
       ).join('\n');
 
-      const instructions = `Help Scout MCP Server - Search and retrieve customer support conversations.
+      const instructions = `Help Scout MCP Server - Search and retrieve Help Scout inbox, conversation, customer, and organization data.
 
 ## Available Inboxes (${inboxes.length} total)
 ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
@@ -88,6 +88,14 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 | List recent/filtered tickets | searchConversations |
 | Complex filters (email domain, multiple tags) | advancedConversationSearch |
 | Lookup by ticket number (#12345) | structuredConversationFilter |
+| Browse customers by name or query | listCustomers |
+| Find a customer by email | searchCustomersByEmail |
+| Get a full customer profile | getCustomer |
+| Get customer contact channels | getCustomerContacts |
+| Browse organizations | listOrganizations |
+| Get an organization profile | getOrganization |
+| See everyone in an organization | getOrganizationMembers |
+| See all conversations for an organization | getOrganizationConversations |
 | Get full conversation thread | getThreads |
 | Get original email source (SMTP headers) | getOriginalSource |
 | Quick conversation preview | getConversationSummary |
@@ -109,7 +117,8 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 - **Ticket investigation**: searchConversations → getConversationSummary → getThreads
 - **Email delivery diagnosis**: getThreads → getOriginalSource (for SMTP headers, SPF/DKIM/DMARC results)
 - **Keyword research**: comprehensiveConversationSearch → getThreads for details
-- **Customer history**: advancedConversationSearch with customerEmail → getThreads
+- **Customer history**: searchCustomersByEmail → getCustomer → structuredConversationFilter/getThreads
+- **Account review**: listOrganizations/getOrganization → getOrganizationMembers → getOrganizationConversations
 - **Performance review**: getCompanyReport → getProductivityReport → getHappinessReport
 - **Satisfaction analysis**: getHappinessReport → getHappinessRatings (filter by not-good)
 

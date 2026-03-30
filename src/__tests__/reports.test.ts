@@ -225,8 +225,8 @@ describe('Report Tools', () => {
       for (const name of reportToolNames) {
         expect(toolNames).toContain(name);
       }
-      // Total: 14 existing + 10 report = 24
-      expect(tools).toHaveLength(24);
+      // Total: 10 base + 5 write + 8 customer/org + 10 report = 33
+      expect(tools).toHaveLength(33);
     });
   });
 
