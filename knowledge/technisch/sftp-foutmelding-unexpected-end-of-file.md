@@ -11,11 +11,11 @@ Could not connect to server
 
 ## Wat betekent deze foutmelding?
 
-Deze foutmelding betekent dat de server je verbinding wel accepteert, maar dat de **authenticatie mislukt**. Dit is dus geen verbindingsprobleem — de server is bereikbaar, maar je inloggegevens worden niet geaccepteerd.
+De server accepteert je verbinding, maar de authenticatie mislukt. Dit is dus geen verbindingsprobleem, de server is bereikbaar, maar je inloggegevens worden niet geaccepteerd.
 
 ## Oorzaak
 
-De meest voorkomende oorzaak is een **verkeerd wachtwoord**. Dit kan gebeuren als:
+De meest voorkomende oorzaak is een verkeerd wachtwoord. Dit kan gebeuren als:
 
 - Je wachtwoord recent is gewijzigd
 - Je een oud of opgeslagen wachtwoord gebruikt in FileZilla
@@ -23,13 +23,8 @@ De meest voorkomende oorzaak is een **verkeerd wachtwoord**. Dit kan gebeuren al
 
 ## Oplossing
 
-Stel je wachtwoord opnieuw in via Mijn KeurigOnline:
-
-1. Log in op [Mijn KeurigOnline](https://mijn.keurigonline.nl)
-2. Ga naar **Pakketten**
-3. Stel daar je DirectAdmin-wachtwoord opnieuw in
-
-Je DirectAdmin-wachtwoord is hetzelfde als je FTP/SFTP-wachtwoord. Na het resetten kun je opnieuw verbinding maken in FileZilla met het nieuwe wachtwoord.
+1. **Stel je wachtwoord opnieuw in.** Log in op [Mijn KeurigOnline](https://mijn.keurigonline.nl), ga naar **Pakketten** en stel daar je DirectAdmin-wachtwoord opnieuw in.
+2. **Probeer opnieuw te verbinden.** Je DirectAdmin-wachtwoord is hetzelfde als je FTP/SFTP-wachtwoord. Gebruik het nieuwe wachtwoord in FileZilla.
 
 ## Correcte SFTP-instellingen
 
@@ -41,4 +36,10 @@ Controleer ook of je de juiste instellingen gebruikt in FileZilla:
 - **Gebruikersnaam:** je DirectAdmin-gebruikersnaam
 - **Wachtwoord:** je DirectAdmin-wachtwoord
 
-Je servernaam en gebruikersnaam vind je terug in de welkomstmail die je bij het aanmaken van je pakket hebt ontvangen, of via Mijn KeurigOnline onder **Pakketten**.
+Je servernaam en gebruikersnaam vind je terug in de welkomstmail die je bij het aanmaken van je pakket hebt ontvangen, of via [Mijn KeurigOnline](https://mijn.keurigonline.nl) onder **Pakketten**.
+
+## Gerelateerde artikelen
+
+- [Hoe kan ik inloggen op de FTP server?](hoe-kan-ik-inloggen-op-de-ftp-server.md)
+- [Hoe kan ik het FTP wachtwoord wijzigen?](hoe-kan-ik-het-ftp-wachtwoord-wijzigen.md)
+- [Kan niet via FTP verbinden (KPN-klanten)](ftp-problemen-kpn-klanten.md)

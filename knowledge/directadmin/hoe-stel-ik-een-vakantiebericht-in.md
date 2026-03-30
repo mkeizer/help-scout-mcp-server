@@ -2,34 +2,33 @@
 
 > Bron: https://help.keurigonline.nl/article/131-hoe-stel-ik-een-vakantiebericht-in
 
-Met een vakantiebericht wordt automatisch een e‑mail teruggestuurd naar iedereen die jou mailt tijdens je afwezigheid.
+Met een vakantiebericht (autoresponder) wordt automatisch een e-mail teruggestuurd naar iedereen die jou mailt tijdens je afwezigheid.
 
-### ✅ **Stap 1: Inloggen in DirectAdmin**- Ga naar je DirectAdmin‑omgeving (https://jouwdomein.nl:2222  of via de link in het klantenportaal).- Log in met je **gebruikersnaam** en **wachtwoord**.### ✅ **Stap 2: Ga naar ‘E-mail Accounts’**- Klik in het hoofdmenu (linkerkant) op **E-mail Accounts**.
+## Stappenplan
 
-In de nieuwe Evolution‑skin is dit vaak te vinden onder het kopje **E-mail Management**.
+1. **Log in op DirectAdmin.** Ga naar `https://jouwdomein.nl:2222` en log in met je gebruikersnaam en wachtwoord.
+2. **Ga naar E-mail Accounts.** Klik in het menu op **E-mail Management > E-mail Accounts**.
+3. **Open het tabblad Autoresponders.** Klik bovenaan op het tabblad **Autoresponders** (soms heet dit "Vakantieberichten" of "Automatisch antwoord").
+4. **Maak een nieuwe autoresponder aan.** Klik op **Create Autoresponder** en vul de volgende velden in:
+   - **E-mail account:** kies het e-mailadres waarvoor je het vakantiebericht wilt instellen
+   - **Van naam:** je eigen naam of bedrijfsnaam
+   - **Onderwerp:** bijvoorbeeld "Ik ben afwezig tot [datum]"
+   - **Bericht:** je automatische antwoord, bijvoorbeeld:
 
-### ✅ **Stap 3: Open het tabblad ‘Autoresponders’**- Binnen **E-mail Accounts** zie je bovenaan verschillende tabbladen.- Klik op **Autoresponders**.
+     ```
+     Bedankt voor je bericht. Ik ben momenteel afwezig en heb beperkt
+     toegang tot mijn e-mail. Vanaf [datum] ben ik weer aanwezig en
+     zal ik je bericht zo snel mogelijk beantwoorden.
+     ```
 
-*(Soms heet het in jouw taal al “Vakantieberichten” of “Automatisch antwoord”.)*
+5. **Stel de periode in (optioneel).** Vul de start- en einddatum in waarop het bericht actief moet zijn.
+6. **Opslaan.** Klik op **Create** om het vakantiebericht te activeren.
 
-### ✅ **Stap 4: Nieuwe autoresponder toevoegen**- Klik rechtsboven op **Create Autoresponder** (of **Nieuwe autoresponder**).
+## Resultaat
 
-Vul de volgende velden in:
+Je vakantiebericht is nu actief. Iedereen die je mailt ontvangt automatisch je afwezigheidsbericht.
 
-- **E-mail account**: kies het e‑mailadres waarvoor je het vakantiebericht wilt instellen.- **From name (Van naam)**: de afzendernaam die zichtbaar wordt in het antwoord (bijv. je eigen naam of bedrijfsnaam).- **From e-mail (Van e‑mail)**: laat dit staan op het gekozen e‑mailaccount.- **Subject (Onderwerp)**: zet hier een duidelijk onderwerp, bijvoorbeeld:
+## Gerelateerde artikelen
 
-Ik ben afwezig tot [datum] 
-
-- **Message (Bericht)**: typ hier je automatische antwoord.
-
-Bijvoorbeeld:
-
-Bedankt voor je bericht. Ik ben momenteel afwezig en heb beperkt toegang tot mijn e-mail.
-Vanaf [datum] ben ik weer aanwezig en zal ik je bericht zo snel mogelijk beantwoorden.
-Met vriendelijke groet,
-[Je naam]
-- **Is HTML?**: vink dit alleen aan als je HTML‑opmaak gebruikt in je bericht.### ✅ **Stap 5: Instellen van periode (optioneel)**- Vul de datum en tijd in vanaf wanneer dit bericht actief moet zijn, en vanaf welk moment deze niet meer actief zal moeten zijn.### ✅ **Stap 6: Opslaan**Klik op **Create** of **Opslaan**.
-
-Je ziet nu in de lijst jouw nieuwe autoresponder staan.
-
-
+- [Hoe kan ik een e-mailadres aanmaken?](../e-mail/hoe-kan-ik-een-e-mailadres-aanmaken.md)
+- [Hoe kan ik inloggen in DirectAdmin?](hoe-kan-ik-inloggen-in-directadmin.md)

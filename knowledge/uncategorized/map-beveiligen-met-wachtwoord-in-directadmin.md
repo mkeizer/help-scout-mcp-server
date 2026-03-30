@@ -1,21 +1,45 @@
-# Password Protected Directories / Beveiligde Mappen in DirectAdmin
+# Hoe beveilig ik een map met een wachtwoord in DirectAdmin?
 
 > Bron: https://help.keurigonline.nl/article/134-map-beveiligen-met-wachtwoord-in-directadmin
 
-Met **Password Protected Directories / Beveiligde Mappen** kun je een map op je website afschermen met een gebruikersnaam en wachtwoord. Bezoekers krijgen eerst een loginvenster te zien voordat ze de inhoud kunnen bekijken. Dit is handig voor een afgeschermd gedeelte (*members area*), privé downloads of een klantportal. 
+Met Password Protected Directories kun je een map op je website afschermen met een gebruikersnaam en wachtwoord. Bezoekers krijgen een loginvenster te zien voordat ze de inhoud kunnen bekijken. Handig voor een afgeschermd gedeelte, prive downloads of een klantportaal.
 
-## Voorbereiding- Log in op DirectAdmin en open **Password Protected Directories / Beveiligde Mappen**. De URL loopt altijd via :2222/evo/user/protected-directories .- Bedenk welke map je wilt beveiligen, bijvoorbeeld: /domains/jouwdomein.nl/public_html/secure .- Heb je de map nog niet? Maak deze eerst aan via de *File Manager* of (S)FTP.![](https://s3.amazonaws.com/helpscout.net/docs/assets/5acb572d0428630750923499/images/68ac37078e97a048e5e61a62/file-aaX9uoAyeR.png)
+## Voorbereiding
 
-## Map beveiligen (stappen)- Ga naar **Password Protected Directories / Beveiligde Mappen** in DirectAdmin.- Klik op **Add Protected Directory / Beveiligde map toevoegen**.- Selecteer het **Path / Pad** (de map) die je wilt beveiligen. 
+- Bedenk welke map je wilt beveiligen, bijvoorbeeld `/domains/jouwdomein.nl/public_html/secure`.
+- Heb je de map nog niet? Maak deze eerst aan via de File Manager of (S)FTP.
 
-Tip: gebruik bij voorkeur een submap zoals /public_html/secure .
+## Stappenplan
 
-- Vul **Protected Directory Prompt / Beveiligde Directory Prompt** in: de titel die bezoekers in het loginvenster zien. 
+1. **Log in op DirectAdmin.** Ga naar `https://jouwdomein.nl:2222` en log in met je gebruikersnaam en wachtwoord.
+2. **Open Password Protected Directories.** Navigeer naar Password Protected Directories (Beveiligde Mappen) in het menu.
+3. **Voeg een beveiligde map toe.** Klik op **Add Protected Directory** en selecteer het pad van de map die je wilt beveiligen.
+4. **Stel de prompt in.** Vul bij Protected Directory Prompt een titel in die bezoekers in het loginvenster zien, bijvoorbeeld "Beveiligd gedeelte".
+5. **Maak een gebruiker aan.** Voer bij Set/Update User een gebruikersnaam in en stel een sterk wachtwoord in (of gebruik de generator).
+6. **Activeer de beveiliging.** Klik op **Protect** om de beveiliging in te schakelen.
 
-Voorbeeld: Beveiligd gedeelte  of Klantenportal .
+## Testen
 
-- Maak een gebruiker aan: - **Set/Update User / Gebruiker instellen/bijwerken**: voer een gebruikersnaam in.- **Password / Wachtwoord**: stel een sterk wachtwoord in of gebruik de generator.- Klik op **Protect / Beveilig** om de beveiliging in te schakelen.![](https://s3.amazonaws.com/helpscout.net/docs/assets/5acb572d0428630750923499/images/68ac3712862bcf0840f643fe/file-rnyyqC5FSB.png)
+Bezoek de URL van de beveiligde map, bijvoorbeeld `https://jouwdomein.nl/secure/`. Er verschijnt een loginvenster. Vul de gebruikersnaam en het wachtwoord in die je zojuist hebt aangemaakt.
 
-## Wat vul je precies in?- **Path / Pad:** de map die je wilt afschermen (bijv. /public_html/secure ).- **Protected Directory Prompt / Beveiligde Directory Prompt:** de titel in het loginvenster (vrij in te vullen).- **Set/Update User / Gebruiker instellen/bijwerken:** de gebruikersnaam die toegang krijgt.- **Password / Wachtwoord:** het wachtwoord dat bij de gebruiker hoort.## Beveiligde map testen- Bezoek de URL van de map, bijvoorbeeld: https://jouwdomein.nl/secure/ .- Er verschijnt een loginprompt in je browser.- Vul de zojuist aangemaakte gebruikersnaam en wachtwoord in.## Gebruikers beheren- Open **Password Protected Directories / Beveiligde Mappen** en klik op de betreffende map.- Je kunt extra gebruikers toevoegen of wachtwoorden wijzigen via *Set/Update User*.- Verwijder je de map uit de lijst, dan is de beveiliging direct opgeheven.## Veelvoorkomende problemen- **Geen loginprompt zichtbaar:** controleer of je echt de map-URL bezoekt, of dat een eigen .htaccess  de instellingen overschrijft.- **401/403 blijft terugkomen:** controleer de gebruikersnaam/wachtwoord (hoofdlettergevoelig), of verwijder en maak de gebruiker opnieuw aan.- **Pad niet te selecteren:** maak de map eerst aan via File Manager of (S)FTP en herlaad de pagina.## Belangrijk- De beveiliging geldt voor de hele map en alle onderliggende bestanden/submappen.- Dit is een **server-level bescherming** (Apache/LiteSpeed) en staat los van WordPress of CMS-logins.- Gebruik altijd sterke wachtwoorden en geef alleen toegang aan de juiste personen.## Beveiliging verwijderenVerwijder je de map in **Password Protected Directories / Beveiligde Mappen**, dan is de inhoud weer vrij toegankelijk. 
+## Gebruikers beheren
 
+- Open Password Protected Directories en klik op de betreffende map.
+- Je kunt extra gebruikers toevoegen of wachtwoorden wijzigen via Set/Update User.
+- Verwijder je de map uit de lijst, dan is de beveiliging direct opgeheven.
 
+## Veelvoorkomende problemen
+
+- **Geen loginvenster zichtbaar:** controleer of je de juiste map-URL bezoekt, of dat een eigen `.htaccess` de instellingen overschrijft.
+- **401/403 fout blijft terugkomen:** controleer de gebruikersnaam en het wachtwoord (hoofdlettergevoelig), of verwijder en maak de gebruiker opnieuw aan.
+- **Pad niet te selecteren:** maak de map eerst aan via File Manager of (S)FTP en herlaad de pagina.
+
+## Goed om te weten
+
+- De beveiliging geldt voor de hele map en alle onderliggende bestanden en submappen.
+- Dit is server-level bescherming (Apache/LiteSpeed) en staat los van WordPress of CMS-logins.
+
+## Gerelateerde artikelen
+
+- [Hoe kan ik inloggen in DirectAdmin?](../directadmin/hoe-kan-ik-inloggen-in-directadmin.md)
+- [Mijn website lijkt gehackt te zijn](../technisch/mijn-website-lijkt-gehackt-te-zijn.md)

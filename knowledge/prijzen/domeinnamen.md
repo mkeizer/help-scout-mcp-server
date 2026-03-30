@@ -3,7 +3,7 @@
 > Bron: KeurigOnline API (product/domain)
 > Laatste sync: 2026-03-06
 
-Alle prijzen zijn inclusief BTW.
+Alle prijzen zijn exclusief 21% BTW.
 
 | Extensie | 1 jaar | 2 jaar | 3 jaar | 5 jaar | Privacy |
 |----------|--------|--------|--------|--------|---------|
@@ -14,7 +14,7 @@ Alle prijzen zijn inclusief BTW.
 | .be | €14 | - | - | - | Nee |
 | .info | €27 | - | - | - | Nee |
 | .eu | €14 | - | - | - | Nee |
-| .de | €12 | - | - | - | Nee |
+| .de | €14 | - | - | - | Nee |
 | .biz | €25 | - | - | - | Nee |
 | .name | €13.5 | €27 | - | - | Nee |
 | .tv | €92 | - | - | - | Nee |

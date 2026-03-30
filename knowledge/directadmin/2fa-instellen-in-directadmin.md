@@ -1,29 +1,36 @@
-# Tweefactorauthenticatie (2FA) instellen in DirectAdmin
+# Hoe stel ik tweefactorauthenticatie (2FA) in voor DirectAdmin?
 
 > Bron: https://help.keurigonline.nl/article/138-2fa-instellen-in-directadmin
 
-Tweefactorauthenticatie (2FA) voegt een extra beveiligingslaag toe aan je DirectAdmin-account. Naast je gebruikersnaam en wachtwoord heb je een tijdelijke code nodig die wordt gegenereerd door een authenticatie-app op je smartphone. Dit maakt je account aanzienlijk veiliger tegen onbevoegde toegang.
+Tweefactorauthenticatie (2FA) voegt een extra beveiligingslaag toe aan je DirectAdmin-account. Naast je gebruikersnaam en wachtwoord heb je een tijdelijke code nodig uit een authenticatie-app op je smartphone.
 
-## Wat heb je nodig?Voordat je begint, zorg dat je een authenticatie-app op je smartphone hebt geïnstalleerd. Geschikte apps zijn:
+## Wat heb je nodig?
 
-- Google Authenticator- Microsoft Authenticator- Authy- Een andere TOTP-compatibele authenticatie-app## Stap voor stap: 2FA activeren### 1. Inloggen op DirectAdminLog eerst in op je DirectAdmin-account. Als je niet weet hoe dit moet, [volg dan deze instructies om in te loggen op DirectAdmin](https://help.keurigonline.nl/article/47-hoe-kan-ik-inloggen-in-directadmin).
+Een authenticatie-app op je smartphone, bijvoorbeeld:
 
-### 2. Navigeer naar Twee-Staps AuthenticatieGa in het menu naar **Geavanceerde Functies** en klik op **Twee-Staps Authenticatie**.
+- Google Authenticator
+- Microsoft Authenticator
+- Authy
+- Een andere TOTP-compatibele app
 
-### 3. Secret genererenKlik op de knop Vereist een geldige tweestapsverificatiecode om in te loggen op dit account
+## Stappenplan
 
-. DirectAdmin genereert nu een unieke code en toont een QR-code op je scherm.
+1. **Log in op DirectAdmin.** Ga naar `https://jouwdomein.nl:2222` en log in met je gebruikersnaam en wachtwoord.
+2. **Ga naar Twee-Staps Authenticatie.** Navigeer naar **Geavanceerde Functies > Twee-Staps Authenticatie**.
+3. **Genereer een secret.** Klik op "Vereist een geldige tweestapsverificatiecode om in te loggen op dit account". DirectAdmin toont nu een QR-code.
+4. **Scan de QR-code.** Open je authenticatie-app en scan de QR-code. De app voegt DirectAdmin toe en begint met het genereren van codes.
+5. **Test de code.** Voer de 6-cijferige code uit je app in het testveld in en controleer of deze wordt geaccepteerd.
+6. **Activeer 2FA.** Geef een herkenbare omschrijving op, vink de optie aan om 2FA te vereisen bij inloggen, en klik op **Save**.
 
-### 4. QR-code scannenOpen je authenticatie-app op je smartphone en scan de QR-code die op het scherm wordt getoond. De app voegt DirectAdmin nu toe aan je lijst met accounts en begint met het genereren van tijdelijke codes.
+## Resultaat
 
-### 5. Code testenVoordat je 2FA activeert, test je eerst of alles correct werkt. Voer de 6-cijferige code die je authenticatie-app toont in het testveld in en controleer of deze wordt geaccepteerd.
+Je DirectAdmin-account is nu beveiligd met 2FA. Bij elke login heb je naast je wachtwoord ook een code uit je authenticatie-app nodig.
 
-### 6. 2FA activerenNa een succesvolle test kun je 2FA activeren:
+**Belangrijk:** Bewaar je backup-codes veilig voor het geval je geen toegang meer hebt tot je authenticatie-app. Zonder deze codes kun je niet meer inloggen.
 
-- Geef een herkenbare omschrijving op. Deze naam zie je terug in je authenticatie-app en helpt je om het account te identificeren.- Vink de optie aan: **"Vereis een geldige tweestapsverificatiecode om in te loggen op dit account"**- Klik op **Save** om je instellingen op te slaan.## Je account is nu beveiligdVanaf nu is je DirectAdmin-account beveiligd met tweefactorauthenticatie. Bij elke login moet je naast je gebruikersnaam en wachtwoord ook een tijdelijke code invoeren uit je authenticatie-app.
+## Gerelateerde artikelen
 
-**Belangrijk:** Bewaar je backup-codes veilig voor het geval je geen toegang meer hebt tot je authenticatie-app. Zonder deze codes en zonder toegang tot je app kun je niet meer inloggen.
-
-## Hulp nodig?Kom je er niet uit of heb je vragen over het instellen van 2FA? Neem dan contact op met onze supportafdeling.
-
-
+- [Hoe kan ik inloggen in DirectAdmin?](hoe-kan-ik-inloggen-in-directadmin.md)
+- [Twee-factor-authenticatie (2FA) voor Mijn KeurigOnline](../mijn-keurigonline/twee-factor-authenticatie-2fa.md)
+- [Google Authenticator instellen](../uncategorized/google-authenticator-instellen.md)
+- [Geen 2FA-code in de e-mail gekregen?](../uncategorized/geen-2fa-code-in-de-e-mail-gekregen.md)
