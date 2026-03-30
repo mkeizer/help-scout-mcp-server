@@ -162,6 +162,9 @@ curl -so /dev/null -w "%{http_code}" https://<domain>  # Status code only
 curl -w "time_total: %{time_total}s\n" -so /dev/null https://<domain>  # Response time
 ```
 
+**Als de site vanuit onze kant wél werkt maar de klant meldt dat het niet werkt:**
+Dit kan een **firewall blokkade** zijn (ModSecurity, LiteSpeed, of IP-ban). Vraag de klant om zijn/haar IP-adres op te zoeken via `www.checkip.nl` en dit door te geven. Met het IP-adres kunnen we server-side controleren of het IP geblokkeerd wordt. Via SSH: `csf -g <IP>` of in de LiteSpeed/ModSecurity logs zoeken.
+
 #### 4d: SSL Diagnostics
 
 ```bash
@@ -268,6 +271,7 @@ Output a summary to the user (the staff member) with:
 3. **Findings** — diagnostic results, KB matches
 4. **Actions taken** — note, draft reply, tags
 5. **Open questions** — anything that needs manual follow-up (e.g., server-side changes, reassignment)
+6. **Link** — `https://secure.helpscout.net/conversation/{conversationId}/{number}` (altijd als laatste regel toevoegen)
 
 ---
 
@@ -285,6 +289,27 @@ Output a summary to the user (the staff member) with:
 - Scan reports from cl03/cl04 (automated) can be closed
 - Marketing emails from external senders can be closed (API doesn't support spam status)
 - DirectAdmin automated alerts (from da@keurigonline.nl) — investigate before closing
+
+### Imunify alert workflow
+
+Imunify alerts zijn interne scan-rapporten, geen klanttickets. De "klant" is de server (bijv. cl05@keurigonline.nl), niet de eigenaar van het account.
+
+1. **Lees het alert** — welk account, welke bestanden, welke server
+2. **Zoek eerdere tickets** — Imunify rapporteert hetzelfde bestand bij elke scan als het niet verwijderd is. Zoek op accountnaam/domein in eerdere tickets.
+3. **SSH naar het klantaccount** — global key proberen. **GEEN API fallback** (`adminssh/create` is kapot, crasht sshd op de server, twee keer gebeurd op cl03)
+   - Bestand inspecteren (`file`, `head`, `cat`)
+   - WP core verify-checksums (als WordPress)
+   - Plugin lijst + admin users controleren
+   - Zoek naar meer verdachte bestanden: `find . -name '*.php' -path '*/uploads/*.php'`
+4. **Classificeer** het type:
+   - **Nulled plugin** — license bypass code, geen actieve hack
+   - **Webshells/backdoors** — random bestandsnamen, `passthru`, `base64_decode`
+   - **Cryptominer** — ELF binaries, hoog CPU-gebruik
+5. **Verwijder ALLEEN de door Imunify gevonden malware bestanden** — `rm <bestand>`. Imunify quarantinet bestanden (verwijdert read permissions) maar verwijdert ze niet. Hierdoor worden ze bij elke scan opnieuw gerapporteerd. Verwijder NOOIT andere bestanden dan de specifiek gerapporteerde malware.
+6. **Tech note** op het Imunify-ticket met bevindingen
+7. **Klant informeren** (bij actieve hack/webshell) via `createConversation` met `mailboxId: 111589`, `status: "active"`, `draft: true`
+8. **SSH key opruimen** (als via API geplaatst): `sed -i '/claude-triage-permanent/d' ~/.ssh/authorized_keys`
+9. **Sluit het Imunify-ticket** (en eventuele duplicaten)
 
 ### DNS management
 - DNS wordt beheerd via **Mijn KeurigOnline** (mijn.keurigonline.nl), NIET in DirectAdmin
