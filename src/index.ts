@@ -89,6 +89,7 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 | Complex filters (email domain, multiple tags) | advancedConversationSearch |
 | Lookup by ticket number (#12345) | structuredConversationFilter |
 | Get full conversation thread | getThreads |
+| Get original email source (SMTP headers) | getOriginalSource |
 | Quick conversation preview | getConversationSummary |
 | Reply to a conversation (draft by default) | createReply |
 | Add internal staff note | createNote |
@@ -106,6 +107,7 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 
 ## Workflow Patterns
 - **Ticket investigation**: searchConversations → getConversationSummary → getThreads
+- **Email delivery diagnosis**: getThreads → getOriginalSource (for SMTP headers, SPF/DKIM/DMARC results)
 - **Keyword research**: comprehensiveConversationSearch → getThreads for details
 - **Customer history**: advancedConversationSearch with customerEmail → getThreads
 - **Performance review**: getCompanyReport → getProductivityReport → getHappinessReport

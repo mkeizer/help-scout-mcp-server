@@ -162,6 +162,19 @@ export const StructuredConversationFilterInputSchema = z.object({
 );
 
 // Write Tool Input Schemas
+export const CreateConversationInputSchema = z.object({
+  subject: z.string().min(1, 'Subject is required'),
+  customer: z.string().email('Must be a valid email address'),
+  mailboxId: z.number().describe('Inbox ID (e.g. 111589 for KeurigOnline)'),
+  text: z.string().min(1, 'Message body is required'),
+  status: z.enum(['active', 'closed', 'pending']).default('active'),
+  draft: z.boolean().default(true).describe('Create first thread as draft (true) or send immediately (false)'),
+  tags: z.array(z.string()).optional(),
+  assignTo: z.number().optional().describe('User ID to assign to'),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+});
+
 export const CreateReplyInputSchema = z.object({
   conversationId: z.string(),
   text: z.string().min(1, 'Reply text is required'),

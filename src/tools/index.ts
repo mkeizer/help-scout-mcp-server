@@ -56,6 +56,7 @@ import {
   AdvancedConversationSearchInputSchema,
   MultiStatusConversationSearchInputSchema,
   StructuredConversationFilterInputSchema,
+  CreateConversationInputSchema,
   CreateReplyInputSchema,
   CreateNoteInputSchema,
   UpdateConversationStatusInputSchema,
@@ -434,6 +435,26 @@ export class ToolHandler {
         },
       },
       {
+        name: 'createConversation',
+        description: 'Create a new conversation (email) to a customer. Creates a draft by default. Use this to send proactive emails, not replies to existing tickets.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string', description: 'Email subject line' },
+            customer: { type: 'string', description: 'Customer email address' },
+            mailboxId: { type: 'number', description: 'Inbox ID (e.g. 111589 for KeurigOnline)' },
+            text: { type: 'string', description: 'Message body (HTML supported)' },
+            status: { type: 'string', enum: ['active', 'closed', 'pending'], description: 'Conversation status (default: active)', default: 'active' },
+            draft: { type: 'boolean', description: 'Create first message as draft (true, default) or send immediately (false)', default: true },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Tags to apply' },
+            assignTo: { type: 'number', description: 'User ID to assign conversation to' },
+            cc: { type: 'array', items: { type: 'string' }, description: 'CC email addresses' },
+            bcc: { type: 'array', items: { type: 'string' }, description: 'BCC email addresses' },
+          },
+          required: ['subject', 'customer', 'mailboxId', 'text'],
+        },
+      },
+      {
         name: 'createReply',
         description: 'Reply to a conversation. Defaults to draft mode so the reply can be reviewed before sending.',
         inputSchema: {
@@ -769,6 +790,9 @@ export class ToolHandler {
           break;
         case 'structuredConversationFilter':
           result = await this.structuredConversationFilter(request.params.arguments || {});
+          break;
+        case 'createConversation':
+          result = await this.createConversation(request.params.arguments || {});
           break;
         case 'createReply':
           result = await this.createReply(request.params.arguments || {});
@@ -1826,6 +1850,47 @@ export class ToolHandler {
           nextCursor: response._links?.next?.href,
           clientSideFiltering: clientSideFiltered ? `createdBefore filter removed ${originalCount - conversations.length} of ${originalCount} results` : undefined,
           note: 'Structural filtering applied. For content-based search or rep activity, use comprehensiveConversationSearch.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async createConversation(args: unknown): Promise<CallToolResult> {
+    const input = CreateConversationInputSchema.parse(args);
+
+    const thread: Record<string, unknown> = {
+      type: input.draft ? 'reply' : 'reply',
+      customer: { email: input.customer },
+      text: input.text,
+      draft: input.draft,
+    };
+    if (input.cc) thread.cc = input.cc;
+    if (input.bcc) thread.bcc = input.bcc;
+
+    const body: Record<string, unknown> = {
+      subject: input.subject,
+      customer: { email: input.customer },
+      mailboxId: input.mailboxId,
+      type: 'email',
+      status: input.status,
+      threads: [thread],
+    };
+    if (input.tags) body.tags = input.tags;
+    if (input.assignTo !== undefined) body.assignTo = input.assignTo;
+
+    await helpScoutClient.post('/conversations', body);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          action: input.draft ? 'draft_conversation_created' : 'conversation_created',
+          customer: input.customer,
+          subject: input.subject,
+          message: input.draft
+            ? 'New draft conversation created. Review and send it from the Help Scout UI.'
+            : 'New conversation created and sent to customer.',
         }, null, 2),
       }],
     };
