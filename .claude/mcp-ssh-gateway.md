@@ -114,6 +114,13 @@ Gebaseerd op patronen uit CLAUDE.md en memory. ✅ volledig, ⚠️ deels, ❌ o
 | **SMTP recipient probe** | ❌ | geen template |
 | **Exim outbound IP verify** | ❌ | `domainips` lezen, geen verify-template |
 | **FTP login attempts** | ⚠️ | fs_read grep werkt, geen helper |
+| **DirectAdmin API integratie** (als-klant kijken, pakket upgrades, LE renewal, etc.) | ❌ | niet ontsloten; `da api-url` wacht op wrapper |
+| **User impersonation** (als-klant in DA UI / API kijken) | ❌ | geen template; unieke capability van DA-API |
+| **Mailbox password reset** | ❌ | via DA API mogelijk, geen template |
+| **LE renewal trigger** | ❌ | via `/api/server-tls/obtain` of domain-TLS, geen template |
+| **Live DB processlist + kill** | ❌ | via `/api/db-monitor/processes`, veel schoner dan mysql-cli |
+| **Exim-log user-scope** | ❌ | `/api/email-logs/user` met impersonation — geen root-grep nodig |
+| **Active DA-sessies beheren** | ❌ | `/api/sessions` — destroy compromised sessions |
 
 ---
 
@@ -823,7 +830,163 @@ awk -v cutoff=$(date -d "{hours_back} hours ago" +%s) '...'
 
 ---
 
-### Q16 — File-inspectie helpers
+### Q16 — DirectAdmin API-integratie (game-changer)
+
+Naast SSH-templates zou de gateway ook de DirectAdmin REST API moeten ontsluiten. DA draait op poort 2222 op elke server, exposed een Swagger-gedocumenteerde JSON-API met **262 endpoints** (demo: <https://demo.directadmin.com:2222/static/swagger.json>), en biedt een magisch one-shot auth-mechanisme:
+
+```bash
+# temp admin-session, 24u geldig:
+curl -s $(da api-url)/api/version
+
+# temp impersonated user-session, 24u geldig:
+curl -s $(da api-url --user=john)/api/session
+```
+
+De URL bevat een temp login-key. Geen password-knippen, geen stored creds. Voor een sec-agent gateway is dit ideaal: we schrapen nooit wachtwoorden, we genereren per-request (of per-session) een kortlevende key.
+
+#### Veiligheid & operationele principes
+- **Key opnieuw ophalen per template-call** (of cache max 5 min, zeker niet 24u vasthouden) — lekken is dan impact-gelimiteerd
+- **Key nooit loggen** in audit-trail; alleen base-URL + endpoint + method + args
+- `--user=` alleen impersonation als template expliciet per-user is; nooit impliciet escalaten naar admin
+- Read-only endpoints default; mutates via `cmd_mutate` met audit + approval
+- Request timeout default 10s, max 60s
+- Response-truncation 1MB
+
+---
+
+#### `da-api-get` (read, generic)
+Een algemene GET-wrapper met path-allowlist. Vervangt 80% van onze huidige SSH-based file reads.
+
+```
+args:
+  path: string (match allowlist regex)
+  as_user: string (optional — gebruikt --user={as_user} voor impersonation)
+  query: object (optional — querystring)
+
+output:
+  { status_code, headers, body: <parsed JSON> }
+
+allowlist-regex (voorlopig):
+  ^/api/(info|version|session|session/.*|users/[^/]+/(config|usage|login-history)
+    |login-history|login-keys/.*|admin-usage|search/.*
+    |system-info/.*|system-services/.*|system-packages/.*
+    |resource-usage/.*|global-resource-usage/.*
+    |db-show/.*|db-monitor/.*
+    |domain-tls/.*|server-tls/.*
+    |redis/status|modsecurity/.*|modsecurity-audit-log/.*
+    |email-logs.*|email-config/.*|emailvacation/.*
+    |filemanager/.*|git/.*|messages|messages/.*|sessions
+    |server-settings/.*|maintenance|license|plugins/.*)$
+```
+
+**impl:**
+```bash
+# gateway draait op server, dus da-binary is beschikbaar
+BASE=$(da api-url${as_user:+ --user=$as_user})
+curl -s --max-time 10 "$BASE{path}${query:+?$query}" \
+     -H 'Accept: application/json'
+```
+
+---
+
+#### `da-api-post` (mutate, generic met method + endpoint allowlist)
+Meer restrictief: elke mutating endpoint moet in `mutation_allowlist` staan, geen generieke POST.
+
+```
+args:
+  path: string (allowlist regex — aparte strictere list)
+  method: enum (POST, PUT, PATCH, DELETE)
+  body: object (optional)
+  as_user: string (optional)
+output:
+  { status_code, body }
+```
+
+**mutation-allowlist (voorbeeld):**
+```
+POST   /api/system-services-actions/service/{sshd|httpd|exim|dovecot|mariadb|named|directadmin|php*}/restart
+POST   /api/session/login-as/switch                    # impersonation
+POST   /api/session/login-as/return
+POST   /api/change-password                            # mailbox/FTP password reset
+POST   /api/domain-tls/{domain}/certs/.../files        # LE replace (careful)
+POST   /api/db-manage/databases/{db}/repair|optimize|check
+POST   /api/db-monitor/processes/{id}/kill             # kill slow query
+POST   /api/redis/enable|disable
+POST   /api/phpmyadmin-sso/account-access              # SSO-URL voor klant
+PUT    /api/domain-tls/{domain}/acme-config
+POST   /api/server-tls/obtain                          # trigger LE renewal
+POST   /api/clamav                                     # trigger scan
+```
+
+**impl:**
+```bash
+BASE=$(da api-url${as_user:+ --user=$as_user})
+curl -s --max-time 30 -X {method} \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json' \
+     ${body:+-d '$body'} \
+     "$BASE{path}"
+```
+
+---
+
+#### Welke use cases dit onmiddellijk oplost
+
+| Triage-gebruik | DA-API-route | Was voorheen |
+|---|---|---|
+| Volledige klantinfo (pakket, quota, status, domeinen) | `GET /api/users/{u}/config` + `/usage` | handmatig `cat user.conf` + `domains.list` |
+| Live MySQL processlist | `GET /api/db-monitor/processes` | `mysql --defaults-extra-file=...` |
+| Kill slow query | `POST /api/db-monitor/processes/{id}/kill` | `mysql -e "KILL {id}"` |
+| Redis aan/uit + status | `GET/POST /api/redis/*` | socket-probe + DA UI |
+| Service-restart | `POST /api/system-services-actions/service/{svc}/restart` | `systemctl restart` + audit-log handmatig |
+| User impersonatie (als klant kijken) | `POST /api/session/login-as/switch` | NIET MOGELIJK via SSH — game-changer |
+| Mailbox password reset | `POST /api/change-password` + `as_user` | DA UI handmatig |
+| Trigger LE-renewal | `POST /api/server-tls/obtain` of `POST /api/domain-tls/{d}/certs/.../refresh` | `certbot renew --cert-name` |
+| SSL cert status per domein | `GET /api/domain-tls/{domain}/certs` | openssl x509 per pad |
+| Exim log (user-scope!) | `GET /api/email-logs/user?as_user=X` | root-grep op mainlog |
+| ModSecurity audit log parse | `GET /api/modsecurity-audit-log/summary` | `fs_read grep` op auditlog |
+| Login history (brute-force review) | `GET /api/login-history`, `GET /api/users/{u}/login-history` | `/var/log/lfd.log` + `/var/log/secure` |
+| Active sessions zien & killen | `GET /api/sessions` + `POST /api/sessions/destroy/{id}` | n.v.t. |
+| ClamAV on-demand scan | `POST /api/clamav` + `GET /api/clamav/{pid}` | cli handmatig |
+| DA search users door hele server | `GET /api/search/users-extended?query=...` | grep door `/usr/local/directadmin/data/users/` |
+| Systeem-info (CPU/memory/load/FS) | `GET /api/system-info/{cpu|memory|load|fs|uptime}` | `uptime`, `free`, `df` los |
+
+---
+
+#### Endpoints die NIET via swagger zitten — legacy `CMD_*`
+
+DA heeft naast de moderne `/api/*` ook een legacy HTTP-interface onder `/CMD_API_*`. Die geven JSON met de `json=yes` parameter. De sessie-key werkt op beide. Voor triage hebben we deze legacy endpoints nog nodig (geen moderne tegenhanger):
+
+- `CMD_API_DNS_CONTROL` — DNS records lezen/schrijven per domein
+- `CMD_API_POP` — mailaccounts beheren (create/delete/change quota)
+- `CMD_API_EMAIL_FORWARDERS` — forwards
+- `CMD_API_EMAIL_AUTORESPONDER` — autoresponders
+- `CMD_API_FTP` — FTP-accounts
+- `CMD_API_SHOW_DOMAINS` — domeinen per user (overlapt met `/api/users/{u}/config`)
+
+Ze geven geen mooie JSON maar URL-encoded key=val responses. De gateway kan `da-legacy-cmd` als een derde template-type aanbieden als we DNS-editing willen:
+
+```
+da-legacy-cmd:
+  args: command: enum(<allowlist>), as_user: string, params: object
+  impl: curl -s "$(da api-url --user={as_user})/CMD_API_{command}?json=yes&$(urlencode {params})"
+```
+
+---
+
+#### Prioriteit van DA-API-rollout
+
+1. **`da-api-get`** generic read — ontsluit meteen 50+ endpoints zonder per-stuk template-werk
+2. **`da-api-get` + `--user=`** impersonation voor user-scope endpoints
+3. **Specifieke mutates** vóór generic mutate:
+   - `svc-restart` via `/api/system-services-actions/...` (vervangt SSH `systemctl restart`)
+   - `da-user-info` via `/api/users/{u}/config` + `/usage` (vervangt file-reads)
+   - `mysql-processlist` via `/api/db-monitor/processes` (vervangt mysql-cli)
+4. **Legacy CMD_ wrapper** pas als DNS/mail-account beheer vanaf de triage-laag echt nodig is (nu doen we dat nog in Mijn KeurigOnline of DA UI)
+
+---
+
+### Q17 — File-inspectie helpers
 
 #### `file-stat` (read)
 ```
@@ -900,9 +1063,10 @@ Paden die nu ontbreken maar voor triage gewenst zijn:
 
 Volgorde gebaseerd op triage-frequentie:
 
+0. **`da-api-get` generic + impersonation** — ontsluit in één klap 50+ endpoints; vervangt half onze huidige wishlist
 1. **`wp-cli`** — onmisbaar voor malware-triage
 2. **`fcrdns-check` + `mail-sender-diag`** — deliverability #1, vervangen 10+ handmatige stappen
-3. **`svc-restart`** — na elke config-edit nodig
+3. **`svc-restart`** — na elke config-edit nodig (nu via DA-API `/api/system-services-actions/...`)
 4. **`da-login-unblock` + `da-login-whitelist-add`** — hoge volume
 5. **Allowlist `/etc/virtual/**`** + **`mail-user-sent`** — deliverability prereq
 6. **`find-large-files` + `user-quota`** — quota-tickets
