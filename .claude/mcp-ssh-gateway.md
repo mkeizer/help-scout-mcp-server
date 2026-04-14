@@ -769,13 +769,15 @@ output: [{ id, user, host, db, command, time_s, state, info_snippet }]
 
 **impl:**
 ```bash
-mysql -N --defaults-file=/usr/local/directadmin/conf/mysql.conf \
+# DA-cred-file is /usr/local/directadmin/conf/my.cnf (NIET mysql.conf — DA's eigen key=val format),
+# en --defaults-extra-file moet de eerste optie zijn.
+mysql --defaults-extra-file=/usr/local/directadmin/conf/my.cnf -N \
   -e "SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO, 200) \
       FROM information_schema.PROCESSLIST \
       WHERE COMMAND != 'Sleep' \
       ORDER BY TIME DESC"
 ```
-Secret-mask op INFO-kolom (soms creds in query-text).
+Secret-mask op INFO-kolom (soms creds in query-text). Geverifieerd op cl07 (2026-04-14).
 
 ---
 
@@ -788,8 +790,8 @@ output: [{ timestamp, user, db, query_time_s, rows_examined, query_excerpt }]
 **impl:**
 ```bash
 # slow-log pad uit config:
-SL=$(mysql --defaults-file=/usr/local/directadmin/conf/mysql.conf \
-     -N -e "SELECT @@slow_query_log_file")
+SL=$(mysql --defaults-extra-file=/usr/local/directadmin/conf/my.cnf -N \
+     -e "SELECT @@slow_query_log_file")
 tail -n 2000 "$SL" | \
   awk '/^# Time:/{ts=$0} /^# Query_time:/{qt=$3; re=$7} /^[^#]/{print ts"|"qt"|"re"|"$0}' | \
   tail -{limit}
@@ -871,7 +873,8 @@ Paden die nu ontbreken maar voor triage gewenst zijn:
 - `/var/log/pureftpd.log`, `/var/log/proftpd/**` — FTP attempts
 
 **Secret-mask vereist** bij uitbreiding:
-- `/usr/local/directadmin/conf/mysql.conf` (MySQL root cred)
+- `/usr/local/directadmin/conf/my.cnf` (MySQL da_admin cred in [client] format)
+- `/usr/local/directadmin/conf/mysql.conf` (DA's eigen key=val format met user/passwd)
 - `wp-config.php` bij read (salts, DB_PASSWORD)
 - `/etc/my.cnf.d/*pass*`, alle `*_pass*`, `*_password*`, `*_secret*`, `*_token*` in `/etc/`
 - `/etc/letsencrypt/live/*/privkey.pem` — **expliciet uitsluiten**, nooit leesbaar
