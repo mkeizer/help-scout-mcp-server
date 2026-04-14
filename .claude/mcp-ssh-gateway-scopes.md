@@ -179,6 +179,7 @@ wp --path=<p> transient delete --expired    # milde mutate
 ### 2.7 Malware / Imunify-triage
 ```
 file <pad>
+stat <pad>                        # mtime vs ctime — onthult touch -t tampering
 head -c 500 <pad>
 md5sum <pad>; sha256sum <pad>
 cat <pad>                         # alleen < 50KB — wrapper guard
