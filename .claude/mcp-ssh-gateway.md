@@ -84,55 +84,60 @@ Gebaseerd op patronen uit CLAUDE.md en memory. ✅ volledig, ⚠️ deels, ❌ o
 | **DNS-diagnose** | ✅ | `dns` + externe `mcp__dnsscan__*` |
 | **Externe bereikbaarheid** | ✅ | `probe-url`, `net-connect` |
 | **Proces-onderzoek** | ✅ | `processes`, `proc-inspect` |
-| **Algemene file-inspectie** (kaasbaas demo) | ✅ | `fs_list` + `fs_read` (full/tail/grep) |
-| **Quota / disk** | ⚠️ | `disk-usage` template wel, geen `quota -s`, geen "vind top-20 grootste files" |
-| **Webserver-logs** | ⚠️ | `fs_read grep` werkt op `/var/log/httpd/**`, maar geen 5xx-helper |
-| **Exim-log onderzoek** | ⚠️ | `fs_read` op `/etc/exim*`, maar `/var/log/exim*` zit in `/var/log/**` allowlist — check bestandsnaam. Geen `exigrep`-template |
+| **Algemene file-inspectie** | ✅ | `fs_list` + `fs_read` (full/tail/grep) |
+| **Quota / disk** | ⚠️ | `disk-usage` wel, geen `quota -s`, geen top-20 grootste files |
+| **Webserver-logs** | ⚠️ | `fs_read grep` werkt, geen 5xx-helper |
+| **Exim-log onderzoek** | ⚠️ | `fs_read` op `/etc/exim*`, geen `exigrep`-template |
 | **WordPress health + malware** | ❌ | geen wp-cli template |
-| **Malware-triage signatures** | ❌ | alleen manual `fs_read grep` per-file; geen bulk-scan template |
-| **DirectAdmin login blacklist/whitelist** | ❌ | `fs_read` op `/usr/local/directadmin/data/admin/ip_blacklist` werkt, maar geen mutate-template voor unblock/whitelist + `service directadmin restart` |
-| **Dovecot user / quota** | ❌ | geen template; `/var/log/maillog` is leesbaar via fs_read |
-| **DirectAdmin user lookup** (pakket, domeinen vanaf server) | ❌ | paden zijn in allowlist, maar handmatig knippen. Template zou helpen |
-| **CloudLinux LVE** | ❌ | geen `lveinfo`/`lveps` template (irrelevant als server geen CL is — vps333 is geen CL, dus nu niet urgent) |
+| **Malware-triage signatures** | ❌ | alleen manual `fs_read grep` per-file |
+| **DirectAdmin login blacklist/whitelist** | ❌ | read werkt, geen mutate |
+| **Dovecot user / quota** | ❌ | geen template |
+| **DirectAdmin user lookup** (pakket, domeinen) | ❌ | paden in allowlist, geen helper |
+| **CloudLinux LVE** | ❌ | geen template (alleen op cl0* nodig) |
 | **Imunify** | ❌ | geen template |
-| **Service restart** (na DA whitelist edit, na config change) | ❌ | alleen csf-mutates, geen `systemctl restart <svc>` template |
-| **Exim queue manipulation** | ❌ | queue zichtbaar via `mail-queue`, maar geen remove/thaw/freeze |
-| **File stat** (mtime/ctime tampering) | ❌ | `fs_list` geeft mtime maar geen ctime |
-| **Find large files** (quota-troubleshoot) | ❌ | fs_list heeft geen size-filter |
-| **FCrDNS / PTR-forward match** (Gmail 550-5.7.25) | ⚠️ | `dns` template geeft losse PTR, maar geen cross-check. Handmatige stappen |
-| **Mail deliverability diagnostiek** (SPF/DKIM/DMARC + outbound IP match) | ❌ | geen alles-in-één report. Losse `dns` calls + `/etc/virtual/domainips` handmatig |
-| **SMTP banner + HELO** vs PTR | ❌ | `net-connect` doet TCP/TLS, geen SMTP EHLO-banner inspectie |
-| **Email header parsing** (SPF/DKIM alignment uit raw headers) | ❌ | compleet handmatig nu |
-| **IP reputation / blocklist check** | ⚠️ | `whois` geeft geo/ASN, geen RBL check |
-| **SSL / TLS certificaat inspectie** (HTTPS, SMTP) | ❌ | geen template |
-| **Let's Encrypt renewal status** (bekende infra-alert recurrence) | ❌ | `/etc/letsencrypt/**` niet in allowlist |
-| **DNS zone file read** (legacy NS issues) | ❌ | `/var/named/**` niet in allowlist |
-| **Cron jobs per user** (malware schedules detection) | ⚠️ | DA crontab.conf via fs_read werkt, geen helper |
-| **Redis status per user** (DA Redis feature) | ❌ | geen template |
-| **CloudLinux LVE** (503 memory-use case) | ❌ | geen template (alleen op cl0* nodig) |
-| **Imunify malware-list** | ❌ | geen template (alleen op CL) |
+| **Service restart** | ❌ | alleen csf-mutates |
+| **Exim queue manipulation** | ❌ | queue zichtbaar, geen remove/thaw/freeze |
+| **File stat** (mtime/ctime) | ❌ | `fs_list` geeft mtime, geen ctime |
+| **Find large files** | ❌ | fs_list heeft geen size-filter |
+| **FCrDNS / PTR-forward match** | ⚠️ | losse PTR-lookups, geen cross-check |
+| **Mail deliverability** (SPF/DKIM/DMARC + IP) | ❌ | geen alles-in-één report |
+| **SMTP banner + HELO** vs PTR | ❌ | `net-connect` doet TCP/TLS, geen EHLO |
+| **Email header parsing** | ❌ | compleet handmatig |
+| **IP reputation / RBL** | ⚠️ | `whois` geeft geo/ASN, geen RBL |
+| **SSL / TLS certificaat** | ❌ | geen template |
+| **Let's Encrypt renewal status** | ❌ | `/etc/letsencrypt/**` niet in allowlist |
+| **DNS zone file read** | ❌ | `/var/named/**` niet in allowlist |
+| **Cron jobs per user** | ⚠️ | DA crontab via fs_read, geen helper |
+| **Redis status per user** | ❌ | geen template |
 | **LiteSpeed vhosts/logs** | ❌ | `/usr/local/lsws/**` niet in allowlist |
 | **MySQL processlist / slow** | ⚠️ | logs via fs_read, geen live processlist |
-| **SMTP recipient probe** (bestaat ontvanger) | ❌ | geen template |
-| **Exim outbound IP verify** (DKIM envelope-sender issues) | ❌ | `/etc/virtual/domainips` lezen, geen verify-template |
-| **FTP login attempts** (KPN firewall use case) | ⚠️ | fs_read grep werkt, geen helper |
+| **SMTP recipient probe** | ❌ | geen template |
+| **Exim outbound IP verify** | ❌ | `domainips` lezen, geen verify-template |
+| **FTP login attempts** | ⚠️ | fs_read grep werkt, geen helper |
 
 ---
 
 ## Wishlist — templates om toe te voegen
 
-Gegroepeerd naar use case. Voor elke: doel, args, output, veiligheidsvereiste.
+Elk blok: args + output + `impl` (concreet shell-commando, opzettelijk plat zodat je 'm direct kan testen) + eventuele veiligheidsvereisten.
 
-### Q1 — WordPress (hoogste prio; 40% van malware-tickets)
+Convention in de `impl:` blocks:
+- `{arg}` = template-argument, al gevalideerd
+- `STDOUT` = raw output die de template moet parsen naar het JSON-output-schema
+- Gebruik `LC_ALL=C` + `timeout` in productie
+
+---
+
+### Q1 — WordPress (hoogste prio)
 
 #### `wp-cli` (read)
 Vaste sub-command whitelist, path moet onder `/home/*/public_html/**`.
 
 ```
 args:
-  path: string (verplicht, match /home/*/public_html/*)
-  command: enum (zie hieronder)
-  extra_args: array<string> (beperkt, geen | > ; & ; max 8)
+  path: string (match /home/*/public_html/*)
+  command: enum   (zie onder)
+  extra_args: array<string> (max 8, geen | > ; & backtick $(...))
 
 allowed commands:
   core version
@@ -149,35 +154,50 @@ allowed commands:
   db check
   cron event list
   maintenance-mode status
+
+output: { stdout, stderr, exit_code, parsed?: <command-specific> }
 ```
 
+**impl:**
+```bash
+# {user} afgeleid uit owner van {path}/wp-config.php (stat -c %U)
+sudo -u {user} -H wp --path={path} --skip-themes --skip-plugins --no-color {command}
+```
+`--skip-themes --skip-plugins` voorkomt dat een malafide theme/plugin wp-cli hijacked. `sudo -u` is nodig omdat wp-cli weigert als root zonder `--allow-root`.
+
 Secret-mask: nooit `wp config get <key>` voor DB_PASSWORD/AUTH_KEY/salts.
+
+---
 
 #### `php-suspicious-scan` (read)
 Bulk grep voor malware-patterns in een tree.
 
 ```
 args:
-  root: string (moet match /home/*/public_html/** of /home/*/domains/**)
+  root: string (match /home/*/public_html/** of /home/*/domains/**)
   max_matches: int (default 200, max 1000)
 
 output:
-  { path, line_number, match_snippet (first 200 chars), pattern_name }[]
-
-patterns (ERE, vaste set):
-  eval\s*\(
-  base64_decode\s*\(
-  gzinflate\s*\(
-  str_rot13\s*\(
-  preg_replace.*\/e
-  assert\s*\(
-  @\s*(eval|system|exec|passthru|shell_exec)
-  \\x[0-9a-f]{2}.*\\x[0-9a-f]{2}.*\\x[0-9a-f]{2}    # hex-encoded strings
+  [{ path, line_number, match_snippet (first 200 chars), pattern_name }]
 ```
 
-Geen user-supplied patterns — dat is echo-injection risk.
+**impl:**
+```bash
+grep -rEn --include='*.php' --max-count=50 -l \
+  -e 'eval\s*\(' \
+  -e 'base64_decode\s*\(' \
+  -e 'gzinflate\s*\(' \
+  -e 'str_rot13\s*\(' \
+  -e 'preg_replace.*\/e' \
+  -e 'assert\s*\(' \
+  -e '@\s*(eval|system|exec|passthru|shell_exec)' \
+  {root} 2>/dev/null | head -{max_matches}
+```
+Dan per hit-path: `grep -En -m 3 '<pattern>' {path}` voor line_number + snippet. Geen user-supplied patterns (echo-injection risk).
 
-### Q2 — Quota / storage (2e grootste use case)
+---
+
+### Q2 — Quota / storage
 
 #### `find-large-files` (read)
 ```
@@ -187,429 +207,649 @@ args:
   max_results: int (default 50, max 500)
   newer_than_days: int (optioneel)
 output:
-  [{ path, size_bytes, mtime, owner }], gesorteerd op size desc
+  [{ path, size_bytes, mtime, owner }], size desc
 ```
+
+**impl:**
+```bash
+# zonder newer_than_days
+find {root} -type f -size +{min_size_mb}M \
+  -printf '%s\t%T@\t%u\t%p\n' 2>/dev/null \
+  | sort -rn | head -{max_results}
+
+# met newer_than_days
+find {root} -type f -size +{min_size_mb}M -mtime -{newer_than_days} \
+  -printf '%s\t%T@\t%u\t%p\n' 2>/dev/null \
+  | sort -rn | head -{max_results}
+```
+
+---
 
 #### `user-quota` (read)
 ```
 args:
   user: string (valideer tegen /home/<user> bestaan)
 output:
-  { used_mb, limit_mb, files_used, files_limit, blocks_quota_output }
+  { used_mb, limit_mb, files_used, files_limit, raw }
 ```
 
-#### `dir-breakdown` (read, uitbreiding op disk-usage)
-`disk-usage` bestaat al, maar `depth` is 0-3. Soms wil je 4+ op specifiek knelpunt (bijv. `~/application_backups/*/*`). Overweeg depth tot 5 of een aparte deep-du template.
+**impl:**
+```bash
+# DirectAdmin-side (betrouwbaarder dan Linux quota bij cagefs)
+repquota -a 2>/dev/null | awk -v u={user} '$1==u'
+# fallback:
+quota -s -u {user} 2>/dev/null
+# DA exposes quota in:
+cat /usr/local/directadmin/data/users/{user}/quota
+```
 
-### Q3 — Logs (free-form grep & tail binnen allowlist)
+---
 
-`fs_read` heeft al full/tail/grep, dus dit deel is goed. Wel twee **helpers** op top:
+#### `deep-disk-usage` (read, uitbreiding op bestaande `disk-usage`)
+Verhoog `depth` cap van 3 naar 5.
+
+**impl (al bekend):**
+```bash
+du -h --max-depth={depth} {path} 2>/dev/null | sort -h
+```
+
+---
+
+### Q3 — Logs (helpers bovenop `fs_read`)
 
 #### `webserver-errors` (read)
-Per-domain errors samenvatten. Intern: tail -n N `/var/log/httpd/domains/<d>.error.log` + grep 5xx in access log.
 ```
 args:
   domain: string
-  minutes: int (default 60)
+  minutes: int (default 60, max 1440)
 output:
   { error_lines: [..], fivexx_count: N, fivexx_sample: [..] }
 ```
 
+**impl:**
+```bash
+# error log tail (laatste N regels, gefilterd op tijd)
+awk -v cutoff=$(date -d "{minutes} minutes ago" +%s) '
+  { # parse Apache timestamp ...
+  }
+' /var/log/httpd/domains/{domain}.error.log | tail -200
+
+# 5xx in access log
+awk '$9~/^5[0-9][0-9]$/' /var/log/httpd/domains/{domain}.log | tail -50
+```
+
+---
+
 #### `exim-log-search` (read)
-Wrapper om `exigrep`.
 ```
 args:
-  pattern: string (email, domain, of message-id — valideer tegen spatieloze regex)
-  lines_before: int, lines_after: int (cap 50)
+  pattern: string (email, domain, of message-id — regex `^[A-Za-z0-9@._\-]+$`)
+  lines_before: int (default 2, cap 50)
+  lines_after: int (default 20, cap 50)
   hours_back: int (default 24, max 168)
 output:
   { matches: [{ msgid, from, to, status, log_excerpt }] }
 ```
+
+**impl:**
+```bash
+# Exim's eigen tool — trekt alle log-regels van matching messages
+exigrep -M -t {hours_back}h '{pattern}' /var/log/exim/mainlog
+# of op custom range:
+exigrep '{pattern}' /var/log/exim/mainlog
+```
+
+---
 
 ### Q4 — DirectAdmin
 
 #### `da-login-unblock` (mutate)
 ```
 args:
-  ip: string (strict IPv4/IPv6 regex)
-  reason: string (<200)
-actions:
-  sed -i '/^<ip>$/d' /usr/local/directadmin/data/admin/ip_blacklist
-  service directadmin restart
+  ip: string (strict IPv4/IPv6 regex ^[0-9a-fA-F.:/]+$)
+  reason: string (<200 chars)
+output:
+  { removed: bool, lines_before, lines_after, service_restarted: bool }
 safety:
   - atomic write via tempfile
-  - return diff (voor/na line count)
 ```
+
+**impl:**
+```bash
+set -eu
+BL=/usr/local/directadmin/data/admin/ip_blacklist
+BEFORE=$(wc -l < "$BL" 2>/dev/null || echo 0)
+grep -Fxv '{ip}' "$BL" > "$BL.tmp" || true
+mv "$BL.tmp" "$BL"
+AFTER=$(wc -l < "$BL")
+systemctl restart directadmin
+echo "{\"removed\": $(( BEFORE != AFTER )), \"before\": $BEFORE, \"after\": $AFTER}"
+```
+
+---
 
 #### `da-login-whitelist-add` (mutate)
 ```
 args:
   ip: string
   reason: string
-actions:
-  create /usr/local/directadmin/data/admin/ip_whitelist if missing (chown diradmin:diradmin, chmod 644)
-  grep-insert (geen duplicates)
-  service directadmin restart
+output:
+  { added: bool, already_present: bool, service_restarted: bool }
 ```
 
+**impl:**
+```bash
+set -eu
+WL=/usr/local/directadmin/data/admin/ip_whitelist
+touch "$WL"
+chown diradmin:diradmin "$WL"
+chmod 644 "$WL"
+if grep -Fxq '{ip}' "$WL"; then
+  echo '{"added": false, "already_present": true}'
+else
+  echo '{ip}' >> "$WL"
+  systemctl restart directadmin
+  echo '{"added": true, "already_present": false, "service_restarted": true}'
+fi
+```
+
+---
+
 #### `da-user-info` (read)
-Consolideert wat nu handmatig uit `user.conf` + `domains.list` + packages moet. Eén call → klantinfo.
+Consolideert `user.conf`, `domains.list`, `packages/*.conf`, status.
+
+**impl:**
+```bash
+UDIR=/usr/local/directadmin/data/users/{user}
+cat "$UDIR/user.conf"            # key=val form: package, creation_date, suspended, etc.
+cat "$UDIR/domains.list"
+cat "$UDIR/packages.list" 2>/dev/null
+ls "$UDIR/domains/"              # per-domain dirs
+# pakket-limieten komen uit:
+PKG=$(awk -F= '$1=="package"{print $2}' "$UDIR/user.conf")
+cat "/usr/local/directadmin/data/admin/packages/$PKG.pkg"
+# subaccounts:
+cat "$UDIR/users.list" 2>/dev/null
 ```
-args:
-  user: string
-output:
-  {
-    username, package, quota_mb, bandwidth_mb, domains: [..],
-    sub_accounts: [..], suspended: bool, creation_date, server
-  }
-```
+
+---
 
 ### Q5 — Service-restart (mutate)
 
 #### `svc-restart` (mutate)
-Tegenover `svc-status`. Strict service-allowlist.
 ```
 args:
-  service: enum (sshd, httpd, nginx, lsws, exim|exim4, dovecot, mariadb|mysqld, named, directadmin, php*-fpm, csf, lfd)
+  service: enum (sshd, httpd, lsws, exim, exim4, dovecot, mariadb, mysqld, named, directadmin, php-fpm, csf, lfd)
   reason: string
-actions:
-  systemctl restart <svc>
 output:
-  pre/post status, restart duration
+  { pre_state, post_state, duration_ms }
 safety:
-  no restart op sshd zonder warning/confirm-twice (kan je lockout)
-  rate-limit: max 3 restarts per service per 10 min
+  - sshd vereist tweede confirm (lockout-risk)
+  - rate-limit: max 3 restarts per svc per 10 min
 ```
+
+**impl:**
+```bash
+set -eu
+systemctl show {service} -p ActiveState,SubState --value
+T0=$(date +%s%3N)
+systemctl restart {service}
+T1=$(date +%s%3N)
+sleep 1
+systemctl show {service} -p ActiveState,SubState --value
+echo "duration_ms=$(( T1 - T0 ))"
+```
+
+---
 
 ### Q6 — Mail
 
 #### `mail-queue-action` (mutate)
 ```
 args:
-  message_id: string (regex ^[0-9a-zA-Z-]+$)
+  message_id: string (^[0-9a-zA-Z-]{16,30}$)
   action: enum (remove, thaw, freeze, deliver)
-actions:
-  exim -Mrm|-Mt|-Mf|-M <id>
+output:
+  { success, stderr }
 ```
+
+**impl:**
+```bash
+case {action} in
+  remove)  exim -Mrm {message_id} ;;
+  thaw)    exim -Mt  {message_id} ;;
+  freeze)  exim -Mf  {message_id} ;;
+  deliver) exim -M   {message_id} ;;
+esac
+```
+
+---
 
 #### `dovecot-user` (read)
 ```
-args:
-  email: string (user@domain)
-output:
-  { uid, gid, home, quota_used, quota_limit, last_login_ts }
-intern: doveadm user + quota get
+args: email: string (user@domain)
+output: { uid, gid, home, quota_used_mb, quota_limit_mb, last_login_ts }
 ```
 
+**impl:**
+```bash
+doveadm user {email}
+doveadm quota get -u {email}
+doveadm who -u {email}
+```
+
+---
+
 #### `mail-user-sent` (read)
-Lees /etc/virtual/usage/<domain>_out (zit in `/etc/exim*` allowlist? Check — nee, staat onder `/etc/virtual/`. **Gateway-allowlist moet uitgebreid naar `/etc/virtual/**`.**)
 ```
-args:
-  domain: string
-output:
-  { sent_last_hour, sent_last_day, sent_last_week, limit }
+args: domain: string
+output: { sent_last_hour, sent_last_day, sent_last_week, limit }
+requires: allowlist /etc/virtual/**
 ```
+
+**impl:**
+```bash
+cat /etc/virtual/usage/{domain}_out 2>/dev/null   # timestamps per send
+cat /etc/virtual/limit                            # globale limit
+cat /etc/virtual/limit_{user} 2>/dev/null         # per-user override
+# gateway parst timestamps → buckets (hour/day/week)
+```
+
+---
 
 ### Q7 — Malware response (mutate)
 
 #### `quarantine-file` (mutate)
-Iets tussen delete en laten staan.
 ```
 args:
   path: string (allowlist path)
   reason: string
-actions:
-  mkdir -p /root/quarantine/<YYYY-MM-DD>/
-  mv <path> /root/quarantine/<YYYY-MM-DD>/<hash>-<basename>
-  log entry met oorspronkelijk pad + mover
 output:
   { quarantine_path, original_path, sha256 }
 ```
 
-Nooit direct `rm` — quarantine laat roll-back toe.
+**impl:**
+```bash
+set -eu
+QDIR="/root/quarantine/$(date +%F)"
+mkdir -p "$QDIR"
+HASH=$(sha256sum {path} | cut -d' ' -f1)
+BASE=$(basename {path})
+DEST="$QDIR/${HASH:0:12}-$BASE"
+mv {path} "$DEST"
+echo "{path}|$DEST|$HASH|{reason}|$(date -Iseconds)" >> /root/quarantine/.ledger
+echo "{\"quarantine_path\":\"$DEST\",\"original_path\":\"{path}\",\"sha256\":\"$HASH\"}"
+```
+
+---
 
 ### Q8 — IP / rDNS / FCrDNS (mail-deliverability)
 
-Context uit memory: Gmail error 550-5.7.25 = missende/mismatched PTR of forward DNS. Veelvoorkomend bij VPS-klanten met eigen Exim of custom A-record die niet matcht met outbound IP.
+#### `fcrdns-check` (read, gateway-side — geen SSH nodig)
+```
+args: ip: string (IPv4 of IPv6)
+output: { ip, ptr, forward_a, forward_aaaa, fcrdns_match, fcrdns_match_ipv4, fcrdns_match_ipv6, missing_records }
+```
 
-#### `fcrdns-check` (read)
-Gegeven één IP: geeft PTR + reverse confirmation.
+**impl:**
+```bash
+PTR=$(dig +short -x {ip} | sed 's/\.$//' | head -1)
+[ -z "$PTR" ] && { echo '{"ptr":null,"fcrdns_match":false}'; exit; }
+A=$(dig +short A    "$PTR")
+AAAA=$(dig +short AAAA "$PTR")
+# gateway vergelijkt: is {ip} in $A ∪ $AAAA ?
 ```
-args:
-  ip: string (IPv4 of IPv6)
-output:
-  {
-    ip,
-    ptr: "mail.example.com",
-    forward_a: ["1.2.3.4"],
-    forward_aaaa: ["2a00:..."],
-    fcrdns_match: true/false,       # host(ptr) ∋ ip ?
-    fcrdns_match_ipv4: bool,
-    fcrdns_match_ipv6: bool,
-    missing_records: ["AAAA"]        # welke lookups niks teruggaven
-  }
-```
-Dekking van de klassieke valkuilen in memory: PTR wel gezet, maar AAAA ontbreekt → Gmail reject.
+
+---
 
 #### `mail-sender-diag` (read)
-De "alles-in-één" voor mail-deliverability. Neemt domein + optioneel selector, retourneert één report.
 ```
-args:
-  domain: string
-  dkim_selectors: array<string> (optioneel; default ["default", "mail", "google"])
-  sender_ip: string (optioneel — als klant klaagt over specifieke bounce)
-output:
-  {
-    mx: [..],
-    spf: { record, all_qualifier, ip_includes_sender: bool/null },
-    dmarc: { policy, pct, rua, sp, adkim, aspf },
-    dkim: { <selector>: { present, key_size, public_key_summary } },
-    outbound_ip_expected: string,     # uit /etc/virtual/domainips
-    outbound_ip_ptr: string,
-    outbound_fcrdns: bool,
-    sender_ip_fcrdns: bool/null,      # alleen als sender_ip meegegeven
-    warnings: [..]                    # bijv. "SPF -all maar outbound IP niet in include"
-  }
+args: domain, dkim_selectors: [...], sender_ip?: string
+output: combineert MX/SPF/DMARC/DKIM/outbound_ip/PTR/FCrDNS
 ```
-Intern combineert `dig` (MX/TXT/A), PTR-lookup, en `fs_read` op `/etc/virtual/domainips`. **Vereist allowlist-uitbreiding naar `/etc/virtual/**`.**
 
-#### `ip-reputation-bulk` (read)
-Uitbreiding op `whois`: naast ipinfo.io ook reputation-bronnen.
+**impl (parallel uitvoeren):**
+```bash
+dig +short MX  {domain}
+dig +short TXT {domain}                               # SPF zit in deze TXT
+dig +short TXT _dmarc.{domain}
+for s in {dkim_selectors[@]}; do
+  dig +short TXT $s._domainkey.{domain}
+done
+# outbound IP per domein:
+grep -E "^{domain}:" /etc/virtual/domainips
+# PTR van configured outbound IP:
+dig +short -x <configured_ip>
+# gateway tekent het overzicht + warnings
 ```
-args:
-  ips: array<string> (max 50)
-output per ip:
-  { geo, org, asn, is_datacenter: bool, blocklists: ["spamhaus", "uceprotect"]? }
-```
-Alleen vrije/publieke bronnen; geen rate-limited commerciële API's.
 
-#### `smtp-banner-probe` (read)
-Belangrijke aanvulling op `net-connect`: check wat de MTA zélf in z'n banner zet.
-```
-args:
-  host: string
-  port: int (default 25; ook 587, 465)
-  starttls: bool (default true)
-output:
-  {
-    connected: bool,
-    banner: "220 mail.example.com ESMTP Exim ...",
-    helo_name: string,                # wat server zegt
-    tls_cert_subject: string,
-    tls_cert_san: [..],
-    helo_matches_ptr: bool,           # banner-hostname vs reverse DNS
-    helo_matches_fcrdns: bool
-  }
-```
-Combineert EHLO check met FCrDNS — onthult klassieke "Exim presenteert zich als cl05 maar PTR wijst naar iets anders" probleem.
+---
 
-#### `email-header-analyze` (read, gateway-side — geen SSH nodig)
-Plak raw e-mail headers, krijg SPF/DKIM/DMARC results uitgesplitst.
+#### `ip-reputation-bulk` (read, gateway-side)
 ```
-args:
-  headers: string (raw, multiline)
-output:
-  {
-    from: "...", return_path: "...", envelope_from: "...",
-    alignment: {
-      spf_alignment: "aligned"|"relaxed"|"fail",
-      dkim_alignment: "aligned"|"relaxed"|"fail",
-      dmarc_result: "pass"|"fail"
-    },
-    received_chain: [{ host, ip, timestamp }],
-    auth_results: { spf, dkim, dmarc, arc },
-    warnings: ["envelope-from domain ≠ from domain"]
-  }
+args: ips: [...] (max 50)
+output per ip: { geo, org, asn, is_datacenter, blocklists: [..] }
 ```
-Memory-context: klanten sturen screenshots van Gmail "show original" en we moeten manueel de `Authentication-Results` parsen. Template automatiseert dat.
+
+**impl:**
+```bash
+# geo via bestaande whois-template (ipinfo.io)
+curl -s https://ipinfo.io/{ip}/json
+# RBL checks via DNS (gratis):
+REV=$(echo {ip} | awk -F. '{print $4"."$3"."$2"."$1}')    # IPv4 reverse
+for bl in zen.spamhaus.org bl.spamcop.net dnsbl.sorbs.net b.barracudacentral.org; do
+  dig +short A "$REV.$bl"   # niet-lege response = listed
+done
+```
+
+---
+
+#### `smtp-banner-probe` (read, gateway-side)
+```
+args: host, port (default 25), starttls: bool (default true)
+output: { connected, banner, helo_name, tls_cert_subject, tls_cert_san, helo_matches_ptr, helo_matches_fcrdns }
+```
+
+**impl:**
+```bash
+# swaks doet het allemaal: banner + EHLO + STARTTLS + cert
+swaks --server {host}:{port} --helo swaks-probe.koonline.nl \
+      --tls --quit-after FIRST-EHLO 2>&1
+# alternatief zonder swaks:
+echo -e "EHLO swaks-probe\r\nQUIT\r\n" | \
+  openssl s_client -starttls smtp -connect {host}:{port} -servername {host} 2>&1
+```
+
+---
+
+#### `email-header-analyze` (read, gateway-side, geen SSH)
+```
+args: headers: string (raw multiline)
+output: from, return_path, alignment, received_chain, auth_results, warnings
+```
+
+**impl:** pure gateway-side parsing (Go / Node). Geen shell. Parse `Received:`, `Authentication-Results:`, `ARC-*`, `DKIM-Signature` headers.
+
+---
 
 ### Q9 — Certificaten & DNS zones
 
 #### `tls-cert-inspect` (read, gateway-side)
-Uitgebreider dan `smtp-banner-probe`'s TLS-info: voor HTTPS + mail + arbitrary poort.
 ```
-args:
-  host: string
-  port: int (default 443)
-  starttls: enum (none, smtp, imap, pop3)  # default none
-output:
-  { subject, issuer, not_before, not_after, days_until_expiry,
-    san: [..], key_type, key_bits, signature_alg,
-    chain: [{ subject, issuer, ca }],
-    matches_host: bool }
+args: host, port (default 443), starttls: enum (none, smtp, imap, pop3)
+output: { subject, issuer, not_before, not_after, days_until_expiry, san, key_type, key_bits, signature_alg, chain, matches_host }
 ```
-Dekking: "SSL werkt niet", cert-expiry monitoring, LE-renewal checks.
+
+**impl:**
+```bash
+# starttls=none (HTTPS):
+echo | openssl s_client -servername {host} -connect {host}:{port} \
+      -showcerts 2>/dev/null </dev/null \
+  | openssl x509 -noout -text
+
+# starttls=smtp:
+openssl s_client -starttls smtp -servername {host} -connect {host}:{port} \
+  -showcerts </dev/null 2>/dev/null \
+  | openssl x509 -noout -text
+
+# parse met: -dates -subject -issuer -ext subjectAltName -serial -fingerprint
+```
+
+---
 
 #### `letsencrypt-status` (read)
-Per-domain LE cert-inventaris vanaf de server zelf.
 ```
-args:
-  domain: string
-output:
-  { has_cert, cert_path, not_before, not_after, days_until_expiry,
-    last_renewal_attempt, last_renewal_status,
-    recent_errors: [..] }   # uit /var/log/letsencrypt/letsencrypt.log
+args: domain
+output: { has_cert, cert_path, not_before, not_after, days_until_expiry, last_renewal_attempt, last_renewal_status, recent_errors }
+requires: allowlist /etc/letsencrypt/live/** (exclude privkey.pem) + /var/log/letsencrypt/**
 ```
-Vereist allowlist-uitbreiding: `/etc/letsencrypt/live/**` (uitgezonderd `privkey.pem`) + `/var/log/letsencrypt/**`.
+
+**impl:**
+```bash
+CERT=/etc/letsencrypt/live/{domain}/cert.pem
+if [ -f "$CERT" ]; then
+  openssl x509 -in "$CERT" -noout -dates -subject -issuer
+fi
+grep -E '{domain}|error|failure' /var/log/letsencrypt/letsencrypt.log | tail -30
+# renewal taken:
+ls -la /etc/letsencrypt/renewal/{domain}.conf
+```
+
+---
 
 #### `dns-zone-read` (read)
-Zone file vanaf de autoritatieve server.
 ```
-args:
-  domain: string
-output:
-  { zone_file_path, serial, ns_records, mx_records, a_records,
-    txt_records, dnskey_present, last_modified }
+args: domain
+output: { zone_file_path, serial, ns_records, mx_records, a_records, txt_records, dnskey_present, last_modified }
+requires: allowlist /var/named/**
 ```
-Vereist allowlist: `/var/named/**`. Relevant bij "DNS beheer werkt niet" (legacy nameservers memory).
+
+**impl:**
+```bash
+ZONE=/var/named/{domain}.db
+cat "$ZONE"                             # raw zone content
+named-checkzone {domain} "$ZONE"        # validatie
+stat -c '%y' "$ZONE"                    # last_modified
+grep -E '^\s*[0-9]+\s+IN\s+SOA' "$ZONE" # serial
+```
+
+---
 
 ### Q10 — Cron & scheduled tasks
 
 #### `user-cron` (read)
-Cronjobs van een specifieke user, inclusief malware-cronjobs die via DA geplant zijn.
 ```
-args:
-  user: string
-output:
-  { crontab_entries: [..], last_run_log_snippet: [..],
-    webmin_tasks: [..],         # uit DA taskqueue
-    suspicious_lines: [..] }    # heuristics: curl|bash|base64|/tmp|wget
+args: user
+output: { crontab_entries, da_tasks, suspicious_lines }
+requires: allowlist /var/spool/cron/{user} (single-file, geen glob)
 ```
-Pad: `/usr/local/directadmin/data/users/<u>/crontab.conf` (al in allowlist).
-Extra allowlist nodig: `/var/spool/cron/<user>` (alleen specifieke user-file, niet glob).
+
+**impl:**
+```bash
+# system crontab per user:
+cat /var/spool/cron/{user} 2>/dev/null
+# DA cron config:
+cat /usr/local/directadmin/data/users/{user}/crontab.conf 2>/dev/null
+# heuristic: verdachte regels
+cat /var/spool/cron/{user} 2>/dev/null | \
+  grep -E 'curl|wget|base64|/tmp/|bash -c|sh -c|php -r'
+```
+
+---
 
 ### Q11 — Redis (per-user DA-feature)
 
-Context uit memory: `reference_redis_directadmin.md` — klanten kunnen Redis zelf inschakelen via DA > Geavanceerd > Redis.
-
 #### `redis-status` (read)
 ```
-args:
-  user: string
-output:
-  { enabled: bool, socket_path, pid, memory_used_mb,
-    connected_clients, uptime_seconds, last_save_ts }
+args: user
+output: { enabled, socket_path, pid, memory_used_mb, connected_clients, uptime_seconds, last_save_ts }
+requires: allowlist /home/*/.redis/** en /var/lib/redis/**
 ```
-Intern: redis-cli -s <socket> PING + INFO. Socket in `~/.redis/<user>.sock` of `/var/lib/redis/<user>/`.
+
+**impl:**
+```bash
+SOCK=$(ls /home/{user}/.redis/redis.sock 2>/dev/null || \
+       ls /var/lib/redis/{user}/redis.sock 2>/dev/null || \
+       ls /var/run/redis/{user}.sock 2>/dev/null)
+if [ -n "$SOCK" ] && [ -S "$SOCK" ]; then
+  redis-cli -s "$SOCK" PING
+  redis-cli -s "$SOCK" INFO server memory clients persistence
+fi
+```
+
+---
 
 ### Q12 — SMTP / mail-delivery dieper
 
 #### `smtp-rcpt-probe` (read, use with care)
-Verifieer of een extern mailadres accepteert. Handig bij "mail komt niet aan" → ligt bij ontvanger.
 ```
-args:
-  recipient: string (user@domain)
-  mail_from: string (default MAILER-DAEMON@<our domain>)
-  use_tls: bool (default true)
-output:
-  { mx_used, connected, tls, ehlo_response,
-    rcpt_response: "250 OK" | "550 User unknown" | ...,
-    verdict: "accepted" | "rejected" | "unclear" }
+args: recipient (user@domain), mail_from?, use_tls: bool (default true)
+output: { mx_used, connected, tls, ehlo_response, rcpt_response, verdict }
+safety: rate-limit max 10 probes/uur/domein, geen DATA phase
 ```
-Safety:
-- Rate-limit: max 10 probes per uur per domein (voorkom RBL-flag)
-- Geen DATA phase — alleen MAIL FROM / RCPT TO / QUIT
-- Afvang voor catch-all ontvangers (altijd 250 → "unclear")
+
+**impl:**
+```bash
+swaks --to {recipient} \
+      --from {mail_from:-postmaster@koonline.nl} \
+      --quit-after RCPT \
+      --tls --helo probe.koonline.nl \
+      --timeout 15 2>&1
+```
+
+---
 
 #### `mail-outbound-ip-verify` (read)
-Memory `feedback_exim_outbound_ip.md`: check wat Exim daadwerkelijk stuurt, niet wat DNS/config zegt.
 ```
-args:
-  domain: string
-output:
-  { configured_outbound_ip,          # /etc/virtual/domainips
-    expected_ptr,
-    actual_exim_sending_ip,          # uit recente mainlog entries
-    mismatch: bool,
-    last_sample_msgid,
-    last_sample_headers_excerpt }
+args: domain
+output: { configured_outbound_ip, expected_ptr, actual_exim_sending_ip, mismatch, last_sample_msgid, last_sample_headers_excerpt }
 ```
-Geen echte test-mail sturen — parse recente Exim-log entries.
+
+**impl:**
+```bash
+# verwachte outbound IP uit /etc/virtual/domainips:
+CONFIG_IP=$(awk -F: -v d={domain} '$1==d{print $2}' /etc/virtual/domainips)
+# PTR van verwachte IP:
+dig +short -x "$CONFIG_IP"
+# recente mainlog entries voor dit domein — zoek '=> ' en 'H=' regels:
+grep -E "F=<[^@]+@{domain}>" /var/log/exim/mainlog | tail -20
+# of: haal één recent msgid en dump:
+MSGID=$(grep -E "@{domain}" /var/log/exim/mainlog | grep '<=' | tail -1 | awk '{print $3}')
+exim -Mvh "$MSGID"
+```
+
+---
 
 ### Q13 — CloudLinux & Imunify (alleen op CL-servers)
 
-Nog niet relevant voor `vps333` (geen CL), wél voor `cl0*` servers zodra die in de inventory komen. Kan achter een server-type flag.
+Nog niet relevant voor `vps333` (geen CL), wél voor `cl0*` servers. Achter server-type flag.
 
 #### `lve-info` (read)
 ```
-args:
-  user: string (optioneel; leeg = top-10 globaal)
-  period: enum (10m, 1h, 1d)
-output:
-  { cpu_faults, mem_faults, io_faults, ep_faults, nproc_faults,
-    peak_cpu_pct, peak_mem_mb, limits: {..} }
+args: user? (default: top-10 globaal), period: enum (10m, 1h, 1d)
+output: { cpu_faults, mem_faults, io_faults, ep_faults, nproc_faults, peak_cpu_pct, peak_mem_mb, limits }
 ```
-Memory: `feedback_503_check_lve_limits.md` — altijd LVE limits checken bij 503.
+
+**impl:**
+```bash
+# specifieke user:
+lveinfo --user={user} --period={period}
+# top-users:
+lveinfo --by-usage=cpu --period={period} | head -20
+# huidige limiet-config:
+lvectl list | grep -E "^{user}|^DEFAULT"
+```
+
+---
 
 #### `imunify-malware-list` (read)
 ```
-args:
-  user: string (optioneel)
-  limit: int (default 50)
-output:
-  { incidents: [{ file, hash, type, detected_at, status, size }],
-    total_count }
+args: user?, limit: int (default 50)
+output: { incidents: [...], total_count }
 ```
+
+**impl:**
+```bash
+imunify360-agent malware list --user {user} --limit {limit} --json
+# globaal:
+imunify360-agent malware list --limit {limit} --json
+```
+
+---
 
 ### Q14 — LiteSpeed & MySQL inspectie
 
-#### Allowlist-uitbreidingen (direct leesbaar via `fs_read`)
-- `/usr/local/lsws`, `/usr/local/lsws/conf/**`, `/usr/local/lsws/logs/**`
-- `/usr/local/lsws/conf/vhosts/<user>/**` voor per-user OLS vhost config
+Allowlist-uitbreidingen: `/usr/local/lsws`, `/usr/local/lsws/conf/**`, `/usr/local/lsws/logs/**`.
 
 #### `mysql-processlist` (read)
 ```
-args:
-  filter_user: string (optioneel)
-  filter_time_gt_s: int (optioneel — alleen queries > N sec)
-output:
-  [{ id, user, host, db, command, time_s, state, info_snippet }]
+args: filter_user?, filter_time_gt_s?
+output: [{ id, user, host, db, command, time_s, state, info_snippet }]
 ```
-Secret-mask op eventuele passwords in INFO-kolom (soms komen creds in query-text).
+
+**impl:**
+```bash
+mysql -N --defaults-file=/usr/local/directadmin/conf/mysql.conf \
+  -e "SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO, 200) \
+      FROM information_schema.PROCESSLIST \
+      WHERE COMMAND != 'Sleep' \
+      ORDER BY TIME DESC"
+```
+Secret-mask op INFO-kolom (soms creds in query-text).
+
+---
 
 #### `mysql-slow-sample` (read)
-Laatste N entries uit slow query log.
 ```
-args:
-  limit: int (default 20)
-  min_query_time_s: int (default 2)
-output:
-  [{ timestamp, user, db, query_time_s, rows_examined, query_excerpt }]
+args: limit: int (default 20), min_query_time_s: int (default 2)
+output: [{ timestamp, user, db, query_time_s, rows_examined, query_excerpt }]
 ```
+
+**impl:**
+```bash
+# slow-log pad uit config:
+SL=$(mysql --defaults-file=/usr/local/directadmin/conf/mysql.conf \
+     -N -e "SELECT @@slow_query_log_file")
+tail -n 2000 "$SL" | \
+  awk '/^# Time:/{ts=$0} /^# Query_time:/{qt=$3; re=$7} /^[^#]/{print ts"|"qt"|"re"|"$0}' | \
+  tail -{limit}
+# of pt-query-digest:
+pt-query-digest --limit={limit} "$SL"
+```
+
+---
 
 ### Q15 — FTP-diagnostiek
 
-Memory: `feedback_kpn_ftp_firewall.md` (KPN modem blokkeert FTP). Op dit moment alleen "vraag IP + error aan klant".
-
 #### `ftp-user-attempts` (read)
-Parse pure-ftpd/proftpd logs voor specifieke user of IP.
 ```
-args:
-  user: string (optioneel)
-  ip: string (optioneel)
-  hours_back: int (default 24)
-output:
-  { attempts: [{ ts, ip, user, success: bool, error_code }],
-    summary: { total, success, failed, unique_ips } }
+args: user?, ip?, hours_back: int (default 24)
+output: { attempts: [...], summary: { total, success, failed, unique_ips } }
 ```
+
+**impl:**
+```bash
+# pure-ftpd:
+grep -E '{user}|{ip}' /var/log/pureftpd.log 2>/dev/null
+# proftpd:
+grep -E '{user}|{ip}' /var/log/proftpd/proftpd.log 2>/dev/null
+# messages (fallback):
+grep -E 'ftp.*({user}|{ip})' /var/log/messages 2>/dev/null
+# filter op tijdwindow:
+awk -v cutoff=$(date -d "{hours_back} hours ago" +%s) '...'
+```
+
+---
 
 ### Q16 — File-inspectie helpers
 
 #### `file-stat` (read)
-Ontbreekt nu: `fs_list` geeft wel mtime, geen ctime. Voor tamper-detectie cruciaal.
 ```
-args:
-  path: string
-output:
-  { size, mode, uid_name, gid_name, atime, mtime, ctime, inode, mime_type, magic_type }
+args: path
+output: { size, mode, uid_name, gid_name, atime, mtime, ctime, inode, mime_type, magic_type }
 ```
+
+**impl:**
+```bash
+stat -c 'size=%s mode=%a uid=%U gid=%G atime=%X mtime=%Y ctime=%Z inode=%i type=%F' {path}
+file --brief --mime-type {path}
+file --brief {path}
+```
+ctime vs mtime detecteert `touch -t` tampering.
+
+---
 
 #### `file-integrity` (read)
 ```
-args:
-  path: string
-output:
-  { sha256, md5, size }
+args: path
+output: { sha256, md5, size }
+```
+
+**impl:**
+```bash
+sha256sum {path}
+md5sum {path}
+stat -c %s {path}
 ```
 
 ---
@@ -618,37 +858,38 @@ output:
 
 Paden die nu ontbreken maar voor triage gewenst zijn:
 - `/etc/virtual`, `/etc/virtual/**` — Exim per-domain config (domainips, domainowners, usage, passwd per domain)
-- `/var/log/exim` of specifiek `/var/log/exim/mainlog` — voor grep/tail (check: al gedekt via `/var/log/**`?)
-- `/var/log/httpd/domains/**` — idem, check of dit onder `/var/log/**` valt
-- `/etc/letsencrypt/live/**` — voor cert dates (maar **geen** `privkey.pem`)
+- `/var/log/exim`, `/var/log/exim/**` — mainlog/rejectlog/paniclog (check of al onder `/var/log/**`)
+- `/var/log/httpd/domains/**` — per-domain access/error (idem)
+- `/etc/letsencrypt/live/**` — cert dates (uitgezonderd `privkey.pem`)
 - `/var/log/letsencrypt/**` — renewal error log
 - `/var/named`, `/var/named/**` — zone files (DNS-triage, legacy NS)
 - `/usr/local/lsws`, `/usr/local/lsws/conf/**`, `/usr/local/lsws/logs/**` — LiteSpeed
 - `/etc/dovecot`, `/etc/dovecot/**` — dovecot config
-- `/var/spool/cron/<user>` — per-user cron (alleen specifieke file, niet glob)
+- `/var/spool/cron/<user>` — per-user cron (single-file, niet glob)
 - `/var/lib/redis`, `/var/lib/redis/<user>/**` — Redis user sockets/data
 - `/home/*/.redis/**` — per-user Redis config (DA-standaard pad)
+- `/var/log/pureftpd.log`, `/var/log/proftpd/**` — FTP attempts
 
 **Secret-mask vereist** bij uitbreiding:
-- `/usr/local/directadmin/conf/mysql.conf`
-- Wp-config.php bij read
-- `/etc/my.cnf.d/*pass*`
-- Alle `*_pass*`, `*_password*`, `*_secret*`, `*_token*` patterns in `/etc/`
+- `/usr/local/directadmin/conf/mysql.conf` (MySQL root cred)
+- `wp-config.php` bij read (salts, DB_PASSWORD)
+- `/etc/my.cnf.d/*pass*`, alle `*_pass*`, `*_password*`, `*_secret*`, `*_token*` in `/etc/`
+- `/etc/letsencrypt/live/*/privkey.pem` — **expliciet uitsluiten**, nooit leesbaar
 
 ---
 
 ## Design-principes voor nieuwe templates
 
-1. **Typed args + regex-validatie** — geen free-string op paths, IPs, emails, of commands
-2. **Output structured** — JSON objects, geen raw shell output (zodat de MCP-client betrouwbaar kan parsen)
-3. **Truncation defaults** — max 1MB output, max 500 lines, max 200 matches; overridable binnen limits
-4. **Read vs mutate gescheiden** — nooit een read-template dat stiekem schrijft, nooit een mutate zonder audit-log
-5. **Secret-mask is server-side** — niet de verantwoordelijkheid van de caller om creds eruit te knippen
-6. **Fan-out opt-in** — `server: "all"` alleen als template idempotent en goedkoop is (probe-url ✅, wp-cli verify-checksums ❌)
-7. **Rate-limit op mutates** — voorkom dat een bug in de caller sshd 50x herstart
-8. **Idempotent waar mogelijk** — `csf-allow` van een al-allowed IP moet geen error zijn
-9. **Audit log** — mutate-templates loggen naar centrale log met caller + timestamp + args + result
-10. **Versionable templates** — template-naam + versie, zodat wijzigingen in semantiek traceable zijn
+1. **Typed args + regex-validatie** — geen free-string op paths, IPs, emails, commands
+2. **Output structured** — JSON objects, niet raw shell (parseability)
+3. **Truncation defaults** — max 1MB output, 500 lines, 200 matches; overridable binnen limits
+4. **Read vs mutate gescheiden** — nooit read die schrijft, nooit mutate zonder audit-log
+5. **Secret-mask server-side** — niet callerʼs verantwoordelijkheid
+6. **Fan-out opt-in** — `server: "all"` alleen als idempotent en goedkoop (probe-url ✅, wp-cli verify-checksums ❌)
+7. **Rate-limit mutates** — voorkom 50x sshd-restart
+8. **Idempotent waar mogelijk** — `csf-allow` voor al-allowed IP is geen error
+9. **Audit log** — mutates loggen centraal met caller + timestamp + args + result
+10. **Versionable templates** — template-naam + versie voor traceable semantiek-changes
 
 ---
 
@@ -656,25 +897,25 @@ Paden die nu ontbreken maar voor triage gewenst zijn:
 
 Volgorde gebaseerd op triage-frequentie:
 
-1. **`wp-cli`** — onmiddellijk onmisbaar voor malware-triage
-2. **`fcrdns-check` + `mail-sender-diag`** — deliverability is onze #1 mail-usecase, en deze twee templates vervangen 10+ handmatige stappen
-3. **`svc-restart`** — nodig zodra je config edits hebt (ook na DA whitelist)
-4. **`da-login-unblock` + `da-login-whitelist-add`** — hoge-volume KB-topic
-5. **Allowlist `/etc/virtual/**`** + **`mail-user-sent`** — deliverability-tickets (prerequisite voor `mail-sender-diag`)
+1. **`wp-cli`** — onmisbaar voor malware-triage
+2. **`fcrdns-check` + `mail-sender-diag`** — deliverability #1, vervangen 10+ handmatige stappen
+3. **`svc-restart`** — na elke config-edit nodig
+4. **`da-login-unblock` + `da-login-whitelist-add`** — hoge volume
+5. **Allowlist `/etc/virtual/**`** + **`mail-user-sent`** — deliverability prereq
 6. **`find-large-files` + `user-quota`** — quota-tickets
-7. **`php-suspicious-scan`** — versnelt Imunify-follow-up van 15 min naar 30 sec
-8. **`email-header-analyze`** — veel tickets bevatten gekopieerde Gmail "show original" headers
-9. **`smtp-banner-probe`** — bij VPS-klanten die eigen MTA draaien
+7. **`php-suspicious-scan`** — versnelt Imunify-follow-up 15min → 30sec
+8. **`email-header-analyze`** — Gmail "show original" parsing
+9. **`smtp-banner-probe`** — VPS-klanten met eigen MTA
 10. **`file-stat` + `file-integrity`** — incident response polish
-11. **`exim-log-search` + `mail-outbound-ip-verify`** — Exim-troubleshoot & DKIM-envelope memory
-12. **`tls-cert-inspect` + `letsencrypt-status`** — SSL/LE is een recurrente transient-alert
-13. **`user-cron`** — malware-cronjobs + "mijn cron werkt niet" tickets
+11. **`exim-log-search` + `mail-outbound-ip-verify`** — DKIM envelope-sender
+12. **`tls-cert-inspect` + `letsencrypt-status`** — SSL/LE recurrent
+13. **`user-cron`** — malware-schedules + cron-tickets
 14. **`dns-zone-read`** — legacy-NS tickets
-15. **`redis-status`** — licht, maar handig voor DA Redis tickets
-16. **LVE + Imunify templates** — zodra `cl0*` in inventory komt
-17. **`quarantine-file`** — pas nadat we een schone quarantine-flow hebben
-18. **`smtp-rcpt-probe`** — laatste in volgorde, risicovol door RBL-flagging
-19. **`mysql-processlist` + `ftp-user-attempts`** — nice-to-have, fs_read grep werkt al
+15. **`redis-status`** — licht, DA Redis use-case
+16. **LVE + Imunify** — zodra `cl0*` in inventory
+17. **`quarantine-file`** — na schone quarantine-flow
+18. **`smtp-rcpt-probe`** — laatste, RBL-flag risk
+19. **`mysql-processlist` + `ftp-user-attempts`** — nice-to-have
 20. **`webserver-errors`** — helper, `fs_read grep` werkt al
 
 ---
@@ -682,10 +923,11 @@ Volgorde gebaseerd op triage-frequentie:
 ## Buiten scope
 
 Dingen die de gateway bewust **niet** moet aanbieden:
-- Free-form `bash -c` of `sh -c` — sluit model-injection attack surface uit
+- Free-form `bash -c` of `sh -c` — sluit model-injection uit
 - Interactieve shells, `vim`, `less`
 - File-writes buiten gescripte mutate-templates
 - `rm -rf` of wildcard deletes (quarantine is het alternatief)
-- Root password resets / key rotation (dat is ops-werk, niet triage-werk)
-- Opzetten/afbreken van SSH-keys op klantaccounts (dat deed `adminssh/create` — die API is bovendien kapot)
-- Reading `shadow`, `/root/**`, `/etc/ssh/*_key` (private SSH host keys)
+- Root password resets / key rotation (ops, niet triage)
+- Opzetten/afbreken van SSH-keys op klantaccounts (`adminssh/create` bovendien kapot)
+- Reading `shadow`, `/root/**`, `/etc/ssh/*_key` (private host keys)
+- Reading `/etc/letsencrypt/live/*/privkey.pem`
