@@ -96,6 +96,7 @@ fi
 
 # Extract the ticket ID for the log filename
 TICKET_ID=$(echo "$URL" | awk -F/ '{print $NF}')
+CONVERSATION_ID=$(echo "$URL" | awk -F/ '{print $(NF-1)}')
 TS=$(date +%Y-%m-%dT%H%M%S)
 LOG_FILE="$LOG_DIR/${TS}-ticket-${TICKET_ID}.log"
 REPORT_FILE="${LOG_FILE%.log}.report.json"
@@ -107,38 +108,88 @@ export TRIAGE_REPORT_PATH="$REPORT_FILE"
 export TRIAGE_TICKET_ID="$TICKET_ID"
 export TRIAGE_TICKET_URL="$URL"
 
+# --- Capture HS metadata (subject, customer, status) before invoking Claude --
+# Cron wrapper has .env with HELPSCOUT_APP_ID + HELPSCOUT_APP_SECRET. Rather than
+# letting Claude derive subject/customer from its own context (AI-generated),
+# we grab the real HS fields once here so the log carries authoritative metadata.
+HS_META_LINES=""
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a; source "$REPO_ROOT/.env"; set +a
+  if [[ -n "${HELPSCOUT_APP_ID:-}" && -n "${HELPSCOUT_APP_SECRET:-}" && -n "$CONVERSATION_ID" ]]; then
+    HS_TOKEN=$(curl -sf -X POST https://api.helpscout.net/v2/oauth2/token \
+      -H 'Content-Type: application/json' \
+      -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$HELPSCOUT_APP_ID\",\"client_secret\":\"$HELPSCOUT_APP_SECRET\"}" \
+      2>/dev/null | jq -r '.access_token // empty' 2>/dev/null || true)
+    if [[ -n "$HS_TOKEN" ]]; then
+      HS_CONV=$(curl -sf "https://api.helpscout.net/v2/conversations/$CONVERSATION_ID" \
+        -H "Authorization: Bearer $HS_TOKEN" 2>/dev/null || true)
+      if [[ -n "$HS_CONV" ]]; then
+        HS_META_LINES=$(echo "$HS_CONV" | jq -r '
+          [
+            "Subject: \(.subject // "(geen onderwerp)")",
+            "Customer: \((.primaryCustomer.first // "") + " " + (.primaryCustomer.last // "") | ltrimstr(" ") | rtrimstr(" "))\(if .primaryCustomer.email then " <" + .primaryCustomer.email + ">" else "" end)",
+            "Status: \(.status // "")",
+            "HSCreatedAt: \(.createdAt // "")",
+            "Mailbox: \(.mailboxId // "")",
+            "Tags: \(.tags // [] | map(.tag) | join(", "))"
+          ] | .[]
+        ' 2>/dev/null || true)
+      fi
+    fi
+  fi
+fi
+
 # --- Run triage, capture everything ---------------------------------------
+# Use --output-format json so we can extract token usage + cost per run.
+# The JSON has { result: <markdown reply>, usage: {...}, total_cost_usd, duration_ms, ... }
+# We parse result into the log body (so logs still read as markdown) and append
+# a "Usage: ..." footer line that the triage-viewer parses.
+cd "$REPO_ROOT"
+CLAUDE_JSON=$(mktemp)
+trap 'rm -f "$CLAUDE_JSON"' EXIT
+
+if timeout 25m claude -p "/triage $URL" --output-format json > "$CLAUDE_JSON" 2>&1; then
+  CLAUDE_EXIT=0
+else
+  CLAUDE_EXIT=$?
+fi
+
+# Extract fields (jq is a dependency; if missing or JSON malformed, fall back to raw).
+RESULT_TEXT=""
+USAGE_LINE=""
+if command -v jq >/dev/null && jq -e . "$CLAUDE_JSON" >/dev/null 2>&1; then
+  RESULT_TEXT=$(jq -r '.result // ""' "$CLAUDE_JSON")
+  USAGE_LINE=$(jq -r '
+    if .usage then
+      "input=\(.usage.input_tokens // 0) output=\(.usage.output_tokens // 0) cache_creation=\(.usage.cache_creation_input_tokens // 0) cache_read=\(.usage.cache_read_input_tokens // 0) cost_usd=\(.total_cost_usd // 0) duration_ms=\(.duration_ms // 0) turns=\(.num_turns // 0)"
+    else "" end
+  ' "$CLAUDE_JSON")
+fi
+
 {
   echo "=== run-triage-cron.sh ==="
   echo "Started:  $(date -Iseconds)"
   echo "Ticket:   $URL"
   echo "Log:      $LOG_FILE"
+  [[ -n "$HS_META_LINES" ]] && echo "$HS_META_LINES"
   echo "=========================="
   echo
-
-  # Run claude in non-interactive mode with the /triage command.
-  # Capture stderr as well so API errors and tool failures are visible.
-  # timeout 25m guards against a hung Claude session holding the flock
-  # beyond the next cron tick (flock releases on crash, not on hang).
-  # cd into REPO_ROOT so Claude discovers .claude/commands/triage.md as a
-  # project-scoped command (cron's default CWD is $HOME, where /triage
-  # resolves to "Unknown skill: triage").
-  cd "$REPO_ROOT"
-  if timeout 25m claude -p "/triage $URL" 2>&1; then
-    CLAUDE_EXIT=0
+  if [[ -n "$RESULT_TEXT" ]]; then
+    echo "$RESULT_TEXT"
   else
-    CLAUDE_EXIT=$?
+    # Fallback: dump raw captured content so triage failures are still debuggable
+    echo "[no parsed result — raw output follows]"
+    cat "$CLAUDE_JSON"
   fi
-
   echo
   echo "=========================="
   echo "Finished: $(date -Iseconds)"
   echo "Claude exit: $CLAUDE_EXIT"
-} | tee "$LOG_FILE"
+  [[ -n "$USAGE_LINE" ]] && echo "Usage: $USAGE_LINE"
+} > "$LOG_FILE"
 
-# Use the captured claude exit code as the script's exit code (but don't
-# mask the tee pipeline — PIPESTATUS gives us what we need).
-if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
+if [[ $CLAUDE_EXIT -ne 0 ]]; then
   echo "ERROR: claude -p failed (see $LOG_FILE)" >&2
   exit 3
 fi
