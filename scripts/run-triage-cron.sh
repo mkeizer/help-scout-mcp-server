@@ -202,8 +202,22 @@ trap 'rm -f "$RESULT_FILE"' EXIT
   echo
 } > "$LOG_FILE"
 
+# Optional model override via CLAUDE_MODEL env var (alias like 'sonnet'/'opus'
+# or a full name like 'claude-sonnet-4-6'). Default = Claude Code default (Opus).
+MODEL_ARGS=()
+if [[ -n "${CLAUDE_MODEL:-}" ]]; then
+  MODEL_ARGS=(--model "$CLAUDE_MODEL")
+fi
+
+# Optional system-prompt addition (test-lab uses this to inject dry-run notice).
+# Path to a file whose contents get appended to the default system prompt.
+APPEND_ARGS=()
+if [[ -n "${CLAUDE_APPEND_SYSTEM_PROMPT_FILE:-}" && -f "${CLAUDE_APPEND_SYSTEM_PROMPT_FILE}" ]]; then
+  APPEND_ARGS=(--append-system-prompt "$(cat "$CLAUDE_APPEND_SYSTEM_PROMPT_FILE")")
+fi
+
 set +e
-timeout 25m claude -p "/triage $URL" --output-format stream-json --verbose 2>&1 \
+timeout 25m claude -p "/triage $URL" --output-format stream-json --verbose "${MODEL_ARGS[@]}" "${APPEND_ARGS[@]}" 2>&1 \
   | tee >(jq -c 'select(.type == "result")' > "$RESULT_FILE" 2>/dev/null) \
   | while IFS= read -r line; do
       t=$(jq -r '.type // empty' <<<"$line" 2>/dev/null)
@@ -246,8 +260,11 @@ CLAUDE_EXIT=${PIPESTATUS[0]}
 set -e
 
 USAGE_LINE=""
+MODEL_LINE=""
 if [[ -s "$RESULT_FILE" ]] && jq -e . "$RESULT_FILE" >/dev/null 2>&1; then
   USAGE_LINE=$(jq -r '"input=\(.usage.input_tokens // 0) output=\(.usage.output_tokens // 0) cache_creation=\(.usage.cache_creation_input_tokens // 0) cache_read=\(.usage.cache_read_input_tokens // 0) cost_usd=\(.total_cost_usd // 0) duration_ms=\(.duration_ms // 0) turns=\(.num_turns // 0)"' "$RESULT_FILE")
+  # modelUsage is keyed by model name; take the first (there is normally just one)
+  MODEL_LINE=$(jq -r '(.modelUsage // {}) | keys_unsorted | .[0] // empty' "$RESULT_FILE")
 fi
 
 {
@@ -255,6 +272,7 @@ fi
   echo "=========================="
   echo "Finished: $(date -Iseconds)"
   echo "Claude exit: $CLAUDE_EXIT"
+  [[ -n "$MODEL_LINE" ]] && echo "Model: $MODEL_LINE"
   [[ -n "$USAGE_LINE" ]] && echo "Usage: $USAGE_LINE"
 } >> "$LOG_FILE"
 

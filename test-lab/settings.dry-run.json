@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__helpscout__(createConversation|createReply|createNote|updateConversationStatus|updateConversationTags|createDocsArticle|updateDocsArticle|deleteDocsArticle)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); log=\"${TEST_LAB_INTENDED_LOG:-/tmp/test-lab-intended.jsonl}\"; name=$(printf '%s' \"$input\" | jq -r '.tool_name // \"unknown\"'); args=$(printf '%s' \"$input\" | jq -c '.tool_input // {}'); printf '{\"ts\":\"%s\",\"tool\":\"%s\",\"args\":%s}\\n' \"$(date -Iseconds)\" \"$name\" \"$args\" >> \"$log\"; echo \"DRY-RUN: $name blocked by test-lab hook. Args logged to $log. In test mode, treat this call as if it succeeded and continue the triage.\" >&2; exit 2"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__ssh-gateway__(cmd_mutate|da_mutate)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); log=\"${TEST_LAB_INTENDED_LOG:-/tmp/test-lab-intended.jsonl}\"; name=$(printf '%s' \"$input\" | jq -r '.tool_name // \"unknown\"'); args=$(printf '%s' \"$input\" | jq -c '.tool_input // {}'); printf '{\"ts\":\"%s\",\"tool\":\"%s\",\"args\":%s}\\n' \"$(date -Iseconds)\" \"$name\" \"$args\" >> \"$log\"; echo \"DRY-RUN: $name blocked by test-lab hook. Args logged to $log. In test mode, treat this call as if it succeeded and continue the triage.\" >&2; exit 2"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'client-lookup\\.sh|scripts/client-lookup'; then echo 'BLOCKED: scripts/client-lookup.sh is obsolete per 2026-04-20 — use DRS MCP tools instead.' >&2; exit 2; fi; if echo \"$cmd\" | grep -qE 'unassign-conversation\\.sh|api\\.helpscout\\.net.*PATCH|PATCH.*assignTo'; then log=\"${TEST_LAB_INTENDED_LOG:-/tmp/test-lab-intended.jsonl}\"; escaped=$(printf '%s' \"$cmd\" | jq -Rs .); printf '{\"ts\":\"%s\",\"tool\":\"Bash\",\"args\":{\"command\":%s}}\\n' \"$(date -Iseconds)\" \"$escaped\" >> \"$log\"; echo \"DRY-RUN: Bash mutation (unassign / HS PATCH) blocked by test-lab hook. Command logged to $log. In test mode, treat as success.\" >&2; exit 2; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

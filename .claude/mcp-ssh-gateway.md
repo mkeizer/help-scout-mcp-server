@@ -1121,6 +1121,7 @@ Deze argument-schema's wijken af van wat je uit de template-naam zou gokken — 
 | `da-user-info` | Retourneert leeg object voor users die niet via DA aangemaakt zijn (bijv. handmatig in `/etc/passwd`). Geen error. |
 | `cms-inventory` | Scope = DA-users. Niet-DA users leveren `installs: []`. |
 | `find-large-files` | `root` moet `/home/{user}` of dieper zijn; niet `/home/*`. |
+| `da-user-info` | Arg heet `user` (niet `username`, ondanks dat de schema-description "DirectAdmin username" zegt). Sonnet maakt hier aantoonbaar fouten. |
 
 ---
 

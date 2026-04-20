@@ -1,0 +1,6 @@
+# Test-lab run artifacts — never commit actual run outputs.
+# Keep the directory itself via results/.gitkeep.
+results/*.log
+results/*.intended.jsonl
+results/*.report.json
+results/compare.md
