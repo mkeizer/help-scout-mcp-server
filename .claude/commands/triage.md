@@ -585,6 +585,8 @@ Elke regel heeft een voorbeeld-ticket waar dit geld heeft gekost. Ken de regel, 
 
 8. **Structured tool vóór raw fs_read.** Voor info die een dedicated MCP-tool netjes terug kan geven (pakket-limieten, quota, user-config), begin je met die tool — niet met `fs_read` op de onderliggende file. Volgorde: `da-user-info` → `cl-lvectl` → `drs.*` → dan pas `fs_read` voor iets specifieks dat ontbreekt. Eerst grep'en in `user.conf` en dan alsnog `da-user-info` draaien is 2 calls verspild die 1 call had gekund.
 
+   **Idem voor DRS**: `drs.client-search(field: "id", query: "<id>")` geeft 7 velden (~170 tok) — vaak genoeg voor "is dit een klant, status?". `drs.client-get` geeft 30 velden + 5 invoice-objecten (~720 tok) — alleen gebruiken als je `direct_debit`, `package_count`/`domain_count`, of de facturen echt nodig hebt. Bij puur identiteit-check: search volstaat.
+
 9. **Root cause = stop met zoeken.** Zodra je de oorzaak hebt bevestigd (PHP parse-error regel 3, exim rejection code, quota full), *stop*. Geen nieuwe filters, geen "maar misschien is er nóg iets". Verdergraven na een duidelijke root cause is hindsight-geld: achteraf blijkt altijd dat niks van de extra calls in de reply terechtkwam.
 
 10. **Tool-error fallback chain.** Als een MCP-tool errort, fallback naar de goedkoopste alternatieve databron die je al hebt — niet ToolSearch voor een nieuwe. Bijv. `drs.invoice-search(status: 0)` errort? → check `drs.client-get.recent_invoices[].amount_paid_eur` (die had je vaak al). Geen data = vaak ook een geldig antwoord ("geen openstaande facturen zichtbaar").
