@@ -34,8 +34,18 @@ Use `getConversationSummary` and `getThreads` (in parallel) to get:
 - Full conversation history
 - Customer name, email, company
 
+**Extract the FULL list of questions, not just the subject.**
+
+A ticket can have a narrow subject ("error op mijn website") maar meerdere losse vragen in de body ("kunnen jullie dat fixen? moet ik een groter pakket? hoeveel domeinen kan ik kwijt? heb ik openstaande facturen?"). Elke vraag moet beantwoord worden in de draft reply. Als je één vraag mist, is de klant niet klaar — en als je tool-calls doet die één specifieke vraag beantwoorden kan een reviewer die voor "waste" aanzien zolang de vraag niet zichtbaar is in de scope.
+
+**Scope-inventarisatie vóór je verder gaat:**
+1. Lees de customer-thread body volledig (eerste `type: "customer"` thread in getThreads output).
+2. Maak mentaal een lijst `Q1, Q2, … Qn` — elke zelfstandige vraag is er één, ook als ze in één alinea staan.
+3. Houd die lijst naast je tijdens het triage. Elke tool-call die je overweegt moet aan minstens één Q bijdragen. Zo niet → sla 'm over.
+4. Als de cron-wrapper actief is, staat `CustomerQuestion: Q1 | Q2 | …` bovenaan het log — dat is je ground-truth. Gebruik die.
+
 **Key info to extract:**
-- What is the customer asking/reporting?
+- What is the customer asking/reporting? (may be multiple — see above)
 - What has already been done (previous replies)?
 - What is the latest unanswered message?
 - Is there a specific domain, server, email address, or service mentioned?
@@ -292,6 +302,24 @@ If in doubt, draft a reply instead of closing. A draft can be deleted; an unneed
 ### Step 6: Draft a Reply
 
 Create a draft reply using `createReply` with `draft: true` and `status: "closed"`.
+
+**Note vs reply — verschillende doelen, geen duplicatie.**
+
+De tech note (Step 5) en de draft reply zijn voor verschillende lezers met verschillende informatiebehoeftes. Herhaal niet dezelfde feiten in beide.
+
+| | Tech note (intern) | Draft reply (klant) |
+|---|---|---|
+| Lezer | Collega die de draft reviewed | Klant die de site wil terug |
+| Doel | "Kan ik deze draft gerust verzenden?" | Antwoord op wat klant vroeg |
+| Inhoud | Findings, root cause, technische paden, DRS-gegevens, wat je hebt gedaan/gelaten | Wat voor de klant relevant is om te weten/doen |
+| Detail | Specifiek (paden, client_id, file-regel, commando) | Alleen zoveel als de klant nodig heeft om vooruit te komen |
+| Lengte | Max 15 regels feitelijk | Zo kort als de vragen toelaten |
+
+Voorbeeld bij een PHP parse-error:
+- **Note:** `File: /home/maarten/domains/dotabase.nl/public_html/index.php regel 3 — "echo hallo welkom op mijn website;" (ontbrekende quotes). LiteSpeed STDERR bevestigt. Server/pakket prima. Advies: fix kost 5s via DA Bestandsbeheer, vraag akkoord.`
+- **Reply:** `We zagen dat regel 3 van index.php een kleine fout heeft — de tekst mist aanhalingstekens. Zal ik die voor je corrigeren?`
+
+Wat je in de reply NIET herhaalt: DRS client_id, disk-quota-getallen, DNS-records, pakket-limieten die niet gevraagd zijn. Dat is allemaal al in de note voor de reviewer.
 
 **Reply rules:**
 - Write in **Dutch** unless the customer wrote in another language
@@ -555,7 +583,15 @@ Elke regel heeft een voorbeeld-ticket waar dit geld heeft gekost. Ken de regel, 
 
 7. **ToolSearch front-loaded.** Één bulk-select aan het begin van de triage op basis van ticket-categorie (zie Step 2 classificatie). Recovery-ToolSearches mid-run zijn een smell: je planning klopte niet. Als je écht een tool nodig hebt die je niet geladen hebt, laad hem — maar tel mee dat dit volgende keer in de front-load moet.
 
-**Self-check moment:** als je over je 10e tool call heen gaat en de reply nog niet begonnen is, pauzeer. Vraag: *heb ik genoeg om te antwoorden?* Vaak is het antwoord ja, en was het meeste erna exploratie die nergens toe leidde.
+8. **Structured tool vóór raw fs_read.** Voor info die een dedicated MCP-tool netjes terug kan geven (pakket-limieten, quota, user-config), begin je met die tool — niet met `fs_read` op de onderliggende file. Volgorde: `da-user-info` → `cl-lvectl` → `drs.*` → dan pas `fs_read` voor iets specifieks dat ontbreekt. Eerst grep'en in `user.conf` en dan alsnog `da-user-info` draaien is 2 calls verspild die 1 call had gekund.
+
+9. **Root cause = stop met zoeken.** Zodra je de oorzaak hebt bevestigd (PHP parse-error regel 3, exim rejection code, quota full), *stop*. Geen nieuwe filters, geen "maar misschien is er nóg iets". Verdergraven na een duidelijke root cause is hindsight-geld: achteraf blijkt altijd dat niks van de extra calls in de reply terechtkwam.
+
+10. **Tool-error fallback chain.** Als een MCP-tool errort, fallback naar de goedkoopste alternatieve databron die je al hebt — niet ToolSearch voor een nieuwe. Bijv. `drs.invoice-search(status: 0)` errort? → check `drs.client-get.recent_invoices[].amount_paid_eur` (die had je vaak al). Geen data = vaak ook een geldig antwoord ("geen openstaande facturen zichtbaar").
+
+11. **Scope-check tegen CustomerQuestion.** Het log-header `CustomerQuestion:` toont de échte vragen van de klant. Lees die eerst. Reply moet elk deel-antwoord raken. Omgekeerd: als je een tool-call overweegt die geen van de vragen bedient, sla hem over. Voorbeeld: "error op mijn website" als subject + "heb ik openstaande facturen?" als 5e vraag = invoice-lookup is load-bearing, geen waste.
+
+**Self-check moment:** als je over je 10e tool call heen gaat en de reply nog niet begonnen is, pauzeer. Vraag: *heb ik genoeg om te antwoorden?* Match het dan terug tegen `CustomerQuestion`. Vaak is het antwoord ja, en was het meeste erna exploratie die nergens toe leidde.
 
 ---
 
