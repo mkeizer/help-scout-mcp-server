@@ -160,7 +160,7 @@ Aparte namespace, **geen SSH nodig voor DNS/SMTP checks**. Sluit alles af wat Q8
 | `mail_frozen-summary` | Frozen messages in mainlog over tijdsvenster (werkt ook na queue purge) | ja |
 
 ### DRS billing/CRM (read-only)
-Native DRS database-access via `drs.*` — vervangt `scripts/client-lookup.sh` voor structured output.
+Native DRS database-access via `drs.*` — vervangt (en obsoletede) `scripts/client-lookup.sh`.
 
 - `drs.client-search` — email/username/name/company/phone/id
 - `drs.client-get` — client + 5 recente facturen, package- en domain-count
@@ -1051,7 +1051,7 @@ stat -c %s {path}
 > - **`drs.client-get.direct_debit`** (boolean) + `iban` (masked indien mandaat actief) — vervangt `billing_method`-interpretatie, load-bearing voor `feedback_auto_incasso_no_ideal.md`
 > - **`drs.invoice-get.payment_link`** + idem op `drs.invoice-search` — iDEAL URL met correcte md5-hash (`betalen.keurigonline.nl/ideal/{client}/{invoice}/{md5}`)
 >
-> Triage-replies kunnen nu volledig zonder `scripts/client-lookup.sh` voor betaal-flows. **Guard:** altijd `direct_debit` checken vóór je `payment_link` aan een klant voorstelt — incasso-klanten krijgen geen iDEAL-push.
+> Triage-replies kunnen nu volledig zonder shell-fallback. **Guard:** altijd `direct_debit` checken vóór je `payment_link` aan een klant voorstelt — incasso-klanten krijgen geen iDEAL-push.
 
 Nog open (optioneel, lage prio):
 - Fleet-wide `drs.logboek-search` met alleen `flagged=true` zonder `client_id` — alleen bouwen als DRS actief flagging gebruikt.
@@ -1080,6 +1080,26 @@ Paden die nu ontbreken maar voor triage gewenst zijn:
 - `wp-config.php` bij read (salts, DB_PASSWORD)
 - `/etc/my.cnf.d/*pass*`, alle `*_pass*`, `*_password*`, `*_secret*`, `*_token*` in `/etc/`
 - `/etc/letsencrypt/live/*/privkey.pem` — **expliciet uitsluiten**, nooit leesbaar
+
+---
+
+## Monitoring
+
+**`/health`** (public, geen bearer) — de enige publieke endpoint op `https://gateway.keurigonline.nl`. Retourneert `{"status":"ok", "timestamp", "timestamp_utc"}` in ~100ms. Alle andere endpoints geven `401 missing bearer token`.
+
+Wat het wél zegt: gateway-proces leeft, Apache/2 reverse-proxy routeert, TLS + DNS ok.
+Wat het **niet** zegt: bereikbaarheid naar cl0*/vps333 vanaf de gateway, Help Scout API-status, DRS-DB-status, dnsscan/bNamed MCPs.
+
+**Gebruik in de triage-cron** (`scripts/run-triage-cron.sh`, sinds 2026-04-20):
+- Pre-flight curl naar `/health` vóór Claude wordt gestart → bij non-200 of ontbrekend `"status":"ok"` wordt de run overgeslagen (exit 0, Claude niet gespawnd).
+- Elke run schrijft één regel naar `logs/triage/cron-health.log`:
+  - `gateway=ok hs=ok` → pre-flight clean
+  - `gateway=down code=… body=…` → skip wegens gateway
+  - `gateway=ok hs=down exit=2` → skip wegens HS API (next-koos-ticket.sh faalde)
+- HS API-liveness is piggy-backed op `next-koos-ticket.sh` (de OAuth2 + conv-fetch zelf = probe). Geen aparte probe nodig.
+- Uptime-% berekenen: `grep -c 'gateway=ok hs=ok' cron-health.log` vs `wc -l cron-health.log`.
+
+**Aanbeveling voor externe monitoring**: `/health` opnemen in StatusCake / BetterUptime. Gateway-outage = alle klantdiagnostiek uit, dat wil je direct weten, niet pas na een rondje failing triage-runs.
 
 ---
 

@@ -25,6 +25,9 @@ pids
 *.pid
 *.seed
 *.pid.lock
+*.lock
+.triage-cron.lock
+.bnamed-auto-triage.lock
 
 # Coverage directory used by tools like istanbul
 coverage/
