@@ -18,109 +18,197 @@ Geen user-switch, geen `su - user`, geen free-form commando's. De veiligheid zit
 
 ---
 
-## Huidige capabilities (2026-04-14)
+## Huidige capabilities (laatste introspect: 2026-04-17)
 
 ### Servers in inventory
-- `vps333`
+- `vps333` — ✅ bereikbaar
+- `cl07` — ✅ bereikbaar
+- `cl08` — ✅ bereikbaar
+- `cl04` — ⚠️ geregistreerd maar **auth faalt** (`All configured authentication methods failed`). Sec-agent SSH key ontbreekt of staat verkeerd. cl01-cl03, cl05-cl06 zijn nog niet enrolled.
 
-### fs path allowlist
-```
-/var/log, /var/log/**
-/etc/httpd, /etc/httpd/**
-/usr/local/apache, /usr/local/apache/**
-/var/httpd, /var/httpd/**
-/usr/local/directadmin/conf, /usr/local/directadmin/conf/**
-/usr/local/directadmin/data, /usr/local/directadmin/data/**
-/usr/local/directadmin/logs, /usr/local/directadmin/logs/**
-/home/*/domains, /home/*/domains/**
-/home/*/logs, /home/*/logs/**
-/home/*/public_html, /home/*/public_html/**
-/home/*/imap
-/home/*/Maildir/.Junk
-/opt/alt, /opt/alt/**
-/var/cagefs, /var/cagefs/**
-/etc/container, /etc/container/**
-/etc/exim4, /etc/exim4/**
-/etc/exim.conf
-/etc/php*, /etc/php*/**
-/etc/my.cnf, /etc/my.cnf.d, /etc/my.cnf.d/**
-/etc/nginx, /etc/nginx/**
-/etc/csf, /etc/csf/**
-```
+### fs path allowlist (46 entries)
+Paths staan in de introspect output. Belangrijke additions sinds de v1-spec:
+- `/var/named, /var/named/**` (DNS zone file read werkt nu)
+- `/etc/letsencrypt, /etc/letsencrypt/**` (LE cert status leesbaar)
+- `/usr/local/lsws, /usr/local/lsws/**` (LiteSpeed vhosts/logs)
+- `/var/lib/imunify360, /var/lib/imunify360/**`
+- `/var/lib/mysql`, MySQL slow logs etc.
 
-### Read templates (`cmd_run`)
+### Read templates (`cmd_run`, 44 stuks)
 | Template | Doel |
 |---|---|
-| `csf-query` | CSF firewall lookup (grep IP / templist) |
-| `disk-usage` | df -h of du -sh met depth op allowlist-path |
+| **CloudLinux** |
+| `cl-lve` | LVE resource usage stats (historical) |
+| `cl-lvectl` | Configured LVE resource limits per user |
+| `cl-lveps` | LVE container totals voor specifieke user |
+| `cl-mysql-governor` | MySQL Governor per-user limits + usage |
+| `cl-php-selector` | PHP versies beschikbaar + per-user selectie |
+| `lve-user-info` | LVE snapshot voor één user (limits + usage + faults) |
+| **CMS / WordPress** |
+| `cms-inventory` | CMS detectie (WP/Joomla/Drupal) over alle users |
+| `wp-cli` | Read-only wp-cli op WP-installatie (als owner van wp-config.php) |
+| `wp-audit-all` | Security audit van alle WP-installs (core/plugins/versions/malware) |
+| **Cron / scheduled** |
+| `cron-audit-all` | Verdachte cron-patterns (curl, base64, /tmp, …) over alle users |
+| `user-cron` | Cron jobs voor specifieke user (crontab + DA crontab.conf) |
+| **DirectAdmin** |
+| `da-user-info` | Account config + domeinen + mail/DB counts |
+| `disk-usage` | df -h of du met depth |
+| `dkim-overview` | DKIM status + selector/key voor alle domeinen |
+| `inode-overview` | Inode-usage per DA-user, gesorteerd |
+| `quota-overview` | Disk quota per DA-user, gesorteerd |
+| `traffic-per-user` | Bandwidth deze maand per user |
+| `uid-map` | UID → username mapping |
+| `user-quota` | Disk quota + inode voor specifieke user |
+| **DNS / TLS** |
 | `dns` | A/AAAA/MX/TXT/PTR/NS/CNAME lookups (gateway-side) |
-| `mail-queue` | Exim queue count + details |
+| `dns-zone-read` | BIND zone file parse voor domein (via `/var/named/{domain}.db`) |
+| `letsencrypt-status` | LE cert expiry + renewal config voor domein |
+| `tls-cert-inspect` | TLS cert ophalen van live host (gateway-side, geen SSH) |
+| **File inspection** |
+| `find-large-files` | Grootste files onder pad (path/size/mtime/owner) |
+| `recent-file-changes` | Files gewijzigd laatste N uur onder user's public_html |
+| `recent-uploads` | Recente files over alle users' public_html |
+| **Logs / errors** |
+| `exim-log-search` | `exigrep` over Exim mainlog |
+| `exim-queue-detail` | Mail queue: sender/recipients/age/size/frozen status |
+| `mail-queue` | Queue count + summary |
+| `webserver-errors` | Errorlog-tail + 5xx samples voor domein |
+| `webshell-scan-detect` | 404-aggregaties over access logs (scanner-detectie) |
+| **Mail** |
+| `dovecot-user` | uid/gid/home/quota + active sessions per user |
+| **Network / firewall** |
+| `csf-query` | CSF firewall lookup (IP/templist) |
 | `net-connect` | TCP/TLS probe vanuit server naar host:port |
 | `probe-url` | curl HEAD/GET vanuit server naar URL |
-| `proc-inspect` | Deep /proc inspect van PID (cmdline, cwd, fds, net) |
-| `processes` | ps aux, filter op user / name |
-| `svc-status` | systemctl is-active/sub/load voor N units |
 | `whois` | ipinfo.io lookup, fan-out |
+| **LiteSpeed / MySQL** |
+| `litespeed-vhosts` | LSWS vhost config (alle of specifiek domein) |
+| `lsws-app-sockets` | App-sockets UP/DOWN per domein |
+| `mysql-processlist` | Live `SHOW FULL PROCESSLIST` + optioneel slow log tail |
+| **Process inspection** |
+| `proc-inspect` | /proc voor PID (cmdline, cwd, fds, net) |
+| `processes` | ps aux + filter op user/command |
+| `svc-status` | systemctl is-active/sub/load voor N units |
+| **Security / Imunify** |
+| `imunify` | Imunify360 read-only status queries |
+| `redis-status` | Redis status per DA-user (socket-based) |
 
-### Mutate templates (`cmd_mutate`)
+### Mutate templates (`cmd_mutate`, 21 stuks)
 | Template | Doel |
 |---|---|
-| `csf-allow` | IP naar permanent allow |
-| `csf-deny` | IP naar permanent deny |
-| `csf-unallow` | IP uit allow halen |
-| `csf-undeny` | IP uit deny halen |
+| **Firewall / IP** |
+| `csf-allow` / `csf-unallow` | CSF permanent allow list |
+| `csf-deny` / `csf-undeny` | CSF permanent deny list |
+| `da-blacklist-add` / `da-blacklist-remove` | DA login `ip_blacklist` |
+| `da-whitelist-add` / `da-whitelist-remove` | DA login `ip_whitelist` |
+| **DirectAdmin user maintenance** |
+| `da-cron-deny` | Disable cron voor DA-user (`/etc/cron.deny`) |
+| `da-dkim-create` | DKIM keypair via DA's `dkim_create.sh` |
+| `da-dnssec-enable` | DNSSEC activering via DA's `dnssec.sh` |
+| `da-fix-user` | `fix_da_user.sh` — file ownership + permissions + mail |
+| `da-letsencrypt-request` | LE cert request/renew via DA's `letsencrypt.sh` |
+| `da-set-permissions` | `set_permissions.sh` fix |
+| **Mail** |
+| `exim-queue-action` | Remove / thaw / freeze Exim queue message |
+| **Security / Imunify** |
+| `imunify-mutate` | Imunify360 IP whitelist/blacklist + clean/ignore files |
+| **CloudLinux** |
+| `lve-set-limit` | Set LVE resource limit (nproc, ncpu, pmem, io, iops, mq) |
+| **Gateway** |
+| `server-reenroll` | Her-enroll van een server (sec-agent update) |
+| **Service control** |
+| `service-reload` | Graceful reload (allowlist: apache2, bind9, csf, directadmin, …) |
+| `service-restart` | Hard restart (zelfde allowlist) |
+| **WordPress** |
+| `wp-cli-mutate` | State-changing WP-CLI (als file-owner) |
+
+### DirectAdmin API
+De gateway exposet de DirectAdmin API via `da.read`, `da.mutate`, `da.dangerous`:
+
+- **311 endpoints** beschikbaar
+- **51 read**, **4 mutate**, **4 dangerous**, **252 blocked**
+- `schema_stale: false` — schema is actueel
+- Endpoints te doorzoeken via `da_endpoints` tool
+
+Read-voorbeelden: `/api/db-show/databases`, `/api/domain-tls/{domain}/certs`, `/api/admin-usage`.
+Mutate-voorbeelden: `/api/system-services-actions/service/{service}/reload`.
+Dangerous: `/api/restart`, `/api/version/update`.
+
+### DRS billing/CRM (read-only)
+Native DRS database-access via `drs.*` — vervangt `scripts/client-lookup.sh` voor structured output.
+
+- `drs.client-search` — email/username/name/company/phone/id
+- `drs.client-get` — client + 5 recente facturen, package- en domain-count
+- `drs.invoice-search` — filter op client_id / invoice_id / status
+- `drs.invoice-get` — single invoice + line items (`vat_pct`, `in_collection` flag)
+- `drs.package-search` — pakketten/domeinregistraties op client/domain/status
+- `drs.logboek-search` — activity log met `flagged` + date-range + `contact_type` + `group`
+
+Money in EUR floats, dates ISO-8601.
 
 ---
 
 ## Coverage map — triage use cases
 
-Gebaseerd op patronen uit CLAUDE.md en memory. ✅ volledig, ⚠️ deels, ❌ ontbreekt.
+Bijgewerkt 2026-04-17 op basis van live introspect. ✅ volledig, ⚠️ deels, ❌ ontbreekt.
 
 | Use case | Dekking | Toelichting |
 |---|---|---|
-| **Firewall IP-block** (website werkt niet) | ✅ | `csf-query grep`, mutate via `csf-unallow/undeny` |
+| **Firewall IP-block** (website werkt niet) | ✅ | `csf-query` + `csf-allow/deny` mutates |
 | **Dienststatus** (sshd down, #1287686) | ✅ | `svc-status` |
-| **Mail queue hangt** | ✅ | `mail-queue` |
+| **Service restart/reload** | ✅ | `service-restart`, `service-reload` (whitelisted units) |
+| **Mail queue hangt** | ✅ | `mail-queue`, `exim-queue-detail` |
+| **Exim queue manipulation** | ✅ | `exim-queue-action` (remove/thaw/freeze) |
 | **DNS-diagnose** | ✅ | `dns` + externe `mcp__dnsscan__*` |
+| **DNS zone file read** | ✅ | `dns-zone-read` leest `/var/named/*.db` |
+| **DNSSEC activeren** | ✅ | `da-dnssec-enable` mutate |
 | **Externe bereikbaarheid** | ✅ | `probe-url`, `net-connect` |
 | **Proces-onderzoek** | ✅ | `processes`, `proc-inspect` |
 | **Algemene file-inspectie** | ✅ | `fs_list` + `fs_read` (full/tail/grep) |
-| **Quota / disk** | ⚠️ | `disk-usage` wel, geen `quota -s`, geen top-20 grootste files |
-| **Webserver-logs** | ⚠️ | `fs_read grep` werkt, geen 5xx-helper |
-| **Exim-log onderzoek** | ⚠️ | `fs_read` op `/etc/exim*`, geen `exigrep`-template |
-| **WordPress health + malware** | ❌ | geen wp-cli template |
-| **Malware-triage signatures** | ❌ | alleen manual `fs_read grep` per-file |
-| **DirectAdmin login blacklist/whitelist** | ❌ | read werkt, geen mutate |
-| **Dovecot user / quota** | ❌ | geen template |
-| **DirectAdmin user lookup** (pakket, domeinen) | ❌ | paden in allowlist, geen helper |
-| **CloudLinux LVE** | ❌ | geen template (alleen op cl0* nodig) |
-| **Imunify** | ❌ | geen template |
-| **Service restart** | ❌ | alleen csf-mutates |
-| **Exim queue manipulation** | ❌ | queue zichtbaar, geen remove/thaw/freeze |
-| **File stat** (mtime/ctime) | ❌ | `fs_list` geeft mtime, geen ctime |
-| **Find large files** | ❌ | fs_list heeft geen size-filter |
-| **FCrDNS / PTR-forward match** | ⚠️ | losse PTR-lookups, geen cross-check |
-| **Mail deliverability** (SPF/DKIM/DMARC + IP) | ❌ | geen alles-in-één report |
-| **SMTP banner + HELO** vs PTR | ❌ | `net-connect` doet TCP/TLS, geen EHLO |
-| **Email header parsing** | ❌ | compleet handmatig |
-| **IP reputation / RBL** | ⚠️ | `whois` geeft geo/ASN, geen RBL |
-| **SSL / TLS certificaat** | ❌ | geen template |
-| **Let's Encrypt renewal status** | ❌ | `/etc/letsencrypt/**` niet in allowlist |
-| **DNS zone file read** | ❌ | `/var/named/**` niet in allowlist |
-| **Cron jobs per user** | ⚠️ | DA crontab via fs_read, geen helper |
-| **Redis status per user** | ❌ | geen template |
-| **LiteSpeed vhosts/logs** | ❌ | `/usr/local/lsws/**` niet in allowlist |
-| **MySQL processlist / slow** | ⚠️ | logs via fs_read, geen live processlist |
-| **SMTP recipient probe** | ❌ | geen template |
-| **Exim outbound IP verify** | ❌ | `domainips` lezen, geen verify-template |
-| **FTP login attempts** | ⚠️ | fs_read grep werkt, geen helper |
-| **DirectAdmin API integratie** (als-klant kijken, pakket upgrades, LE renewal, etc.) | ❌ | niet ontsloten; `da api-url` wacht op wrapper |
-| **User impersonation** (als-klant in DA UI / API kijken) | ❌ | geen template; unieke capability van DA-API |
-| **Mailbox password reset** | ❌ | via DA API mogelijk, geen template |
-| **LE renewal trigger** | ❌ | via `/api/server-tls/obtain` of domain-TLS, geen template |
-| **Live DB processlist + kill** | ❌ | via `/api/db-monitor/processes`, veel schoner dan mysql-cli |
-| **Exim-log user-scope** | ❌ | `/api/email-logs/user` met impersonation — geen root-grep nodig |
-| **Active DA-sessies beheren** | ❌ | `/api/sessions` — destroy compromised sessions |
+| **Find large files** | ✅ | `find-large-files` |
+| **Recent file changes / uploads** | ✅ | `recent-file-changes`, `recent-uploads` |
+| **Quota / disk** | ✅ | `quota-overview`, `user-quota`, `inode-overview`, `disk-usage` |
+| **Webserver-logs** | ✅ | `webserver-errors` (errorlog + 5xx samples), `webshell-scan-detect` |
+| **Exim-log onderzoek** | ✅ | `exim-log-search` (`exigrep`) |
+| **WordPress health + malware** | ✅ | `wp-cli`, `wp-audit-all`, `cms-inventory`, `wp-cli-mutate` |
+| **Malware-triage signatures** | ✅ | `webshell-scan-detect`, `recent-uploads`, `recent-file-changes` |
+| **DirectAdmin login blacklist/whitelist** | ✅ | `da-blacklist-add/remove`, `da-whitelist-add/remove` |
+| **Dovecot user / quota** | ✅ | `dovecot-user` |
+| **DirectAdmin user lookup** (pakket, domeinen) | ✅ | `da-user-info` |
+| **CloudLinux LVE** | ✅ | `cl-lve`, `cl-lvectl`, `cl-lveps`, `lve-user-info`, `lve-set-limit` |
+| **MySQL Governor** | ✅ | `cl-mysql-governor` |
+| **PHP Selector** | ✅ | `cl-php-selector` |
+| **Imunify** | ✅ | `imunify` (read) + `imunify-mutate` |
+| **Redis status per user** | ✅ | `redis-status` |
+| **LiteSpeed vhosts/logs** | ✅ | `litespeed-vhosts`, `lsws-app-sockets` |
+| **MySQL processlist / slow** | ✅ | `mysql-processlist` (live SHOW PROCESSLIST + slow log tail) |
+| **Cron jobs per user** | ✅ | `user-cron` + `cron-audit-all` (security scan) |
+| **DirectAdmin API integratie** | ✅ | `da_api.available: true`, 311 endpoints, via `da.read`/`da.mutate` |
+| **DRS client/invoice/package/logboek lookup** | ✅ | `drs.*` (6 tools), native CRM-access |
+| **iDEAL betaallink bij onbetaalde factuur** | ✅ | `drs.invoice-get` + `drs.invoice-search` leveren `payment_link` (md5-hashed iDEAL URL) |
+| **Auto-incasso detectie op client-niveau** | ✅ | `drs.client-get.direct_debit` (boolean) + `iban` (masked indien actief) |
+| **Alle contact-emails voor client** | ✅ | `drs.client-get.all_emails` — dedup van email + secondary + invoice |
+| **LE renewal trigger + status** | ✅ | `letsencrypt-status` + `da-letsencrypt-request` |
+| **SSL / TLS certificaat inspectie** | ✅ | `tls-cert-inspect` (gateway-side, geen SSH nodig) |
+| **DKIM overview / create** | ✅ | `dkim-overview` + `da-dkim-create` |
+| **DA file-ownership repair** | ✅ | `da-fix-user`, `da-set-permissions` |
+| **Traffic per user** | ✅ | `traffic-per-user` |
+| **UID → user mapping** | ✅ | `uid-map` |
+| **Disable user cron (first-response)** | ✅ | `da-cron-deny` |
+| **FCrDNS / PTR-forward match** | ⚠️ | losse PTR via `dns`, geen expliciete cross-check helper |
+| **Mail deliverability all-in-one** (SPF/DKIM/DMARC + IP) | ⚠️ | `dkim-overview` + losse DNS/PTR, geen alles-in-één rapport |
+| **SMTP banner + HELO vs PTR** | ❌ | `net-connect` doet TCP/TLS, geen EHLO-capture |
+| **Email header parsing** | ❌ | Geen template |
+| **IP reputation / RBL** | ⚠️ | `whois` geeft geo/ASN, geen RBL-check |
+| **SMTP recipient probe** | ❌ | Geen template |
+| **Exim outbound IP verify** | ⚠️ | `net-connect` probes werken, geen dedicated outbound-IP-vs-`domainips`-check |
+| **FTP login attempts** | ⚠️ | Geen dedicated template, wel via fs_read grep |
+| **Mailbox password reset** | ⚠️ | Via DA API mogelijk (`da.mutate`), geen convenience-template |
+| **Active DA-sessies beheren** | ⚠️ | Via DA API mogelijk, geen convenience-template |
+| **File stat** (mtime/ctime) | ⚠️ | `fs_list` geeft mtime, geen ctime |
+| **cl04 bereikbaarheid** | ❌ | **Auth faalt** — enrollment repareren |
+| **cl01, cl02, cl03, cl05, cl06 enrollment** | ❌ | Niet in inventory |
 
 ---
 
@@ -135,7 +223,8 @@ Convention in de `impl:` blocks:
 
 ---
 
-### Q1 — WordPress (hoogste prio)
+### Q1 — WordPress (hoogste prio) ✅ DONE
+> `wp-cli`, `wp-cli-mutate`, `wp-audit-all`, `cms-inventory` live.
 
 #### `wp-cli` (read)
 Vaste sub-command whitelist, path moet onder `/home/*/public_html/**`.
@@ -204,7 +293,8 @@ Dan per hit-path: `grep -En -m 3 '<pattern>' {path}` voor line_number + snippet.
 
 ---
 
-### Q2 — Quota / storage
+### Q2 — Quota / storage ✅ DONE
+> `quota-overview`, `user-quota`, `inode-overview`, `find-large-files`, `disk-usage`, `traffic-per-user` live.
 
 #### `find-large-files` (read)
 ```
@@ -262,7 +352,8 @@ du -h --max-depth={depth} {path} 2>/dev/null | sort -h
 
 ---
 
-### Q3 — Logs (helpers bovenop `fs_read`)
+### Q3 — Logs (helpers bovenop `fs_read`) ✅ DONE
+> `webserver-errors`, `exim-log-search` live.
 
 #### `webserver-errors` (read)
 ```
@@ -308,7 +399,8 @@ exigrep '{pattern}' /var/log/exim/mainlog
 
 ---
 
-### Q4 — DirectAdmin
+### Q4 — DirectAdmin ✅ DONE
+> `da-user-info`, `da-blacklist-add/remove`, `da-whitelist-add/remove`, `da-fix-user`, `da-set-permissions`, `da-cron-deny` live. Zie ook Q16 (DA API).
 
 #### `da-login-unblock` (mutate)
 ```
@@ -381,7 +473,8 @@ cat "$UDIR/users.list" 2>/dev/null
 
 ---
 
-### Q5 — Service-restart (mutate)
+### Q5 — Service-restart (mutate) ✅ DONE
+> `service-restart`, `service-reload` met whitelist van units live.
 
 #### `svc-restart` (mutate)
 ```
@@ -409,7 +502,8 @@ echo "duration_ms=$(( T1 - T0 ))"
 
 ---
 
-### Q6 — Mail
+### Q6 — Mail ✅ DONE
+> `dovecot-user`, `dkim-overview`, `da-dkim-create`, `mail-queue`, `exim-queue-detail`, `exim-queue-action` live.
 
 #### `mail-queue-action` (mutate)
 ```
@@ -464,7 +558,8 @@ cat /etc/virtual/limit_{user} 2>/dev/null         # per-user override
 
 ---
 
-### Q7 — Malware response (mutate)
+### Q7 — Malware response (mutate) ✅ DONE
+> `imunify-mutate`, `wp-cli-mutate`, `da-cron-deny` live. `da-fix-user` helpt bij perms-repair na schoonmaak.
 
 #### `quarantine-file` (mutate)
 ```
@@ -490,7 +585,8 @@ echo "{\"quarantine_path\":\"$DEST\",\"original_path\":\"{path}\",\"sha256\":\"$
 
 ---
 
-### Q8 — IP / rDNS / FCrDNS (mail-deliverability)
+### Q8 — IP / rDNS / FCrDNS (mail-deliverability) ⚠️ PARTIAL
+> `dns` (PTR), `whois`, `net-connect`, `probe-url` dekken losse checks. Nog geen dedicated FCrDNS cross-check of SMTP banner/HELO capture.
 
 #### `fcrdns-check` (read, gateway-side — geen SSH nodig)
 ```
@@ -579,7 +675,8 @@ output: from, return_path, alignment, received_chain, auth_results, warnings
 
 ---
 
-### Q9 — Certificaten & DNS zones
+### Q9 — Certificaten & DNS zones ✅ DONE
+> `letsencrypt-status`, `tls-cert-inspect`, `dns-zone-read`, `da-letsencrypt-request`, `da-dnssec-enable` live.
 
 #### `tls-cert-inspect` (read, gateway-side)
 ```
@@ -642,7 +739,8 @@ grep -E '^\s*[0-9]+\s+IN\s+SOA' "$ZONE" # serial
 
 ---
 
-### Q10 — Cron & scheduled tasks
+### Q10 — Cron & scheduled tasks ✅ DONE
+> `user-cron`, `cron-audit-all` (security scan) live.
 
 #### `user-cron` (read)
 ```
@@ -664,7 +762,8 @@ cat /var/spool/cron/{user} 2>/dev/null | \
 
 ---
 
-### Q11 — Redis (per-user DA-feature)
+### Q11 — Redis (per-user DA-feature) ✅ DONE
+> `redis-status` live.
 
 #### `redis-status` (read)
 ```
@@ -686,7 +785,8 @@ fi
 
 ---
 
-### Q12 — SMTP / mail-delivery dieper
+### Q12 — SMTP / mail-delivery dieper ⚠️ PARTIAL
+> `net-connect` doet TCP/TLS. Nog geen EHLO-capture / SMTP banner vs PTR / SMTP recipient probe / outbound-IP-vs-`domainips` verify.
 
 #### `smtp-rcpt-probe` (read, use with care)
 ```
@@ -727,7 +827,8 @@ exim -Mvh "$MSGID"
 
 ---
 
-### Q13 — CloudLinux & Imunify (alleen op CL-servers)
+### Q13 — CloudLinux & Imunify (alleen op CL-servers) ✅ DONE
+> `cl-lve`, `cl-lvectl`, `cl-lveps`, `cl-mysql-governor`, `cl-php-selector`, `lve-user-info`, `lve-set-limit`, `imunify`, `imunify-mutate` live.
 
 Nog niet relevant voor `vps333` (geen CL), wél voor `cl0*` servers. Achter server-type flag.
 
@@ -764,7 +865,8 @@ imunify360-agent malware list --limit {limit} --json
 
 ---
 
-### Q14 — LiteSpeed & MySQL inspectie
+### Q14 — LiteSpeed & MySQL inspectie ✅ DONE
+> `litespeed-vhosts`, `lsws-app-sockets`, `mysql-processlist` live. Kill-query nog via DA API (`da.mutate`) niet via dedicated template.
 
 Allowlist-uitbreidingen: `/usr/local/lsws`, `/usr/local/lsws/conf/**`, `/usr/local/lsws/logs/**`.
 
@@ -808,7 +910,8 @@ pt-query-digest --limit={limit} "$SL"
 
 ---
 
-### Q15 — FTP-diagnostiek
+### Q15 — FTP-diagnostiek ⚠️ PARTIAL
+> Geen dedicated FTP-template; wel via `fs_read grep` op proftpd/pure-ftpd logs.
 
 #### `ftp-user-attempts` (read)
 ```
@@ -830,7 +933,8 @@ awk -v cutoff=$(date -d "{hours_back} hours ago" +%s) '...'
 
 ---
 
-### Q16 — DirectAdmin API-integratie (game-changer)
+### Q16 — DirectAdmin API-integratie (game-changer) ✅ DONE
+> DA API is live via `da.read` / `da.mutate` / `da.dangerous`. **311 endpoints** (51 read, 4 mutate, 4 dangerous, 252 blocked), schema niet stale. Doorzoeken via `da_endpoints` tool.
 
 Naast SSH-templates zou de gateway ook de DirectAdmin REST API moeten ontsluiten. DA draait op poort 2222 op elke server, exposed een Swagger-gedocumenteerde JSON-API met **262 endpoints** (demo: <https://demo.directadmin.com:2222/static/swagger.json>), en biedt een magisch one-shot auth-mechanisme:
 
@@ -986,7 +1090,8 @@ da-legacy-cmd:
 
 ---
 
-### Q17 — File-inspectie helpers
+### Q17 — File-inspectie helpers ✅ DONE
+> `find-large-files`, `recent-file-changes`, `recent-uploads` live.
 
 #### `file-stat` (read)
 ```
@@ -1016,6 +1121,19 @@ sha256sum {path}
 md5sum {path}
 stat -c %s {path}
 ```
+
+---
+
+### Q18 — DRS billing enrichment ✅ DONE
+> Alle drie gaps gesloten (2026-04-20):
+> - **`drs.client-get.all_emails`** — deduped union van email + `secondary_email` + `invoice_email`
+> - **`drs.client-get.direct_debit`** (boolean) + `iban` (masked indien mandaat actief) — vervangt `billing_method`-interpretatie, load-bearing voor `feedback_auto_incasso_no_ideal.md`
+> - **`drs.invoice-get.payment_link`** + idem op `drs.invoice-search` — iDEAL URL met correcte md5-hash (`betalen.keurigonline.nl/ideal/{client}/{invoice}/{md5}`)
+>
+> Triage-replies kunnen nu volledig zonder `scripts/client-lookup.sh` voor betaal-flows. **Guard:** altijd `direct_debit` checken vóór je `payment_link` aan een klant voorstelt — incasso-klanten krijgen geen iDEAL-push.
+
+Nog open (optioneel, lage prio):
+- Fleet-wide `drs.logboek-search` met alleen `flagged=true` zonder `client_id` — alleen bouwen als DRS actief flagging gebruikt.
 
 ---
 
