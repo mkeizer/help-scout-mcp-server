@@ -1151,19 +1151,9 @@ Alle Q1–Q18 items zijn ✅ DONE. Nog open:
 6. **DRS fleet-wide `logboek-search flagged=true`** — alleen bouwen als DRS actief flagging gebruikt.
 7. **Argument-quirks normaliseren** — bovenstaande tabel impliceert dat enkele templates een arg-naming pass kunnen gebruiken (`dns.record_types` één-per-call, `traffic-per-user` default sort descending, `letsencrypt-status` ook DA-cert-dir scannen).
 
-8. **`drs.client-summary(client_id)`** — middenklasse-call tussen `drs.client-search` (7 velden, ~170 tok) en `drs.client-get` (30 velden + 5 nested invoices, ~720 tok). Triage heeft 80% van de tijd `direct_debit` + `package_count` + `domain_count` + `open_invoices_count` nodig, maar niet de 5 recente facturen als objecten. Shape:
-   ```json
-   {
-     "client_id": 3, "name": "...", "email": "...", "all_emails": [...],
-     "company": "...", "status": "actief",
-     "direct_debit": false, "iban": null,
-     "package_count": 84, "domain_count": 83,
-     "open_invoices_count": 0, "open_invoices_total_eur": 0.0
-   }
-   ```
-   ~250 tok, bespaart ~470 tok per lookup op de fat call. Over ~100 triage-runs per week ≈ 47k tokens / week minder — signaal, niet wereldschok, maar gratis winst.
+## Bewust NIET op de wishlist
 
-   Alternatief: `fields` projection param op bestaande `drs.client-get` (GraphQL-stijl). Minder tools, meer regex in de gateway-laag. Voorkeur hangt af van hoe jullie de gateway architect hebben — een aparte tool is de duidelijkste API, projection is flexibeler.
+- **`drs.client-summary`-achtige middenklasse-call** — overwogen tussen `client-search` (~170 tok) en `client-get` (~720 tok). Theoretische besparing ~470 tok per lookup = ~47k tok/week = ~$35/jaar. Niet genoeg om de overhead van een extra tool te rechtvaardigen. Token-optimalisatie zit niet in welke variant je kiest maar in anti-patterns (zie triage.md) — daar staan de 2-5 waste-calls per run die echt duur zijn.
 
 ---
 
