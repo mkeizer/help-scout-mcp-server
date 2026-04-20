@@ -27,6 +27,30 @@ Execute the following steps in order. Each step builds on the previous one.
 
 ---
 
+### Step 0: Anti-patterns you must avoid (read this FIRST)
+
+Every tool call costs tokens. Real runs have wasted 20-30% on these patterns. Keep the list active in your head throughout the triage.
+
+1. **DRS is authoritative for pakket/domein-state.** Als `drs.package-search` "Opgezegd" zegt, is het antwoord daar. Geen fs_read/da-user-info fallback voor "misschien staat het er nog".
+2. **Tool-errors = check necessity, niet alternatief.** Errort een tool? Vraag: had ik deze data nodig voor de reply? Zo nee, drop. Niet ToolSearchen naar een alternatief.
+3. **Eén lookup per identifier.** Email → client_id → client-get. Geen ook-nog-op-name-zoeken. Geen lookup van gerelateerde klanten die "niet relevant voor dit ticket" zijn.
+4. **Diagnose-scope matcht symptoom-laag.** PHP-error zichtbaar = file inspection, geen DNS-scan. Mail werkt op telefoon niet op desktop = client-config, geen SPF/DMARC.
+5. **Regel van 3 op zoek-patronen.** Zelfde file, escalerende patterns = dead end. Stop.
+6. **TodoWrite-drempel: <5 items = skip.** Todo-list overhead voor kleine taken is meer context-churn dan het werk zelf. Gewoon doen.
+7. **ToolSearch front-loaded.** Eén bulk-select aan het begin op basis van ticket-categorie. Recovery-searches mid-run = planning klopte niet.
+8. **Structured MCP vóór raw fs_read.** `da-user-info` / `drs.*` eerst; `fs_read` alleen voor wat ontbreekt.
+9. **Root cause = STOP.** Oorzaak bevestigd? Geen nieuwe filters, geen "maar misschien is er nóg iets". Ga schrijven.
+10. **Tool-error fallback chain.** Mutation errort? Fall back op data die je al hebt (bv. `drs.client-get.recent_invoices` i.p.v. ToolSearch naar een nieuw endpoint).
+11. **Scope-check tegen CustomerQuestion.** Log-header `CustomerQuestion:` toont echte klantvragen. Elke tool-call moet minstens één vraag bedienen. Sla over wat geen vraag bedient.
+12. **Gateway voor server-werk, NIET direct shell.** `mcp__ssh-gateway__*` (cmd_run, fs_read/list, da.read, cmd_mutate) is de standaard. Direct shell-invocaties naar cl-servers alleen als gateway een template echt mist. Zie playbook ssh-access.md.
+13. **Afsluiting matcht het UUR.** Roep `getServerTime`, check ook het uur. **Na 18:00 = "Fijne avond!"** — NIET "Fijne dag!" (die is voorbij), NIET "Goedenavond!" (dat is een begróeting, geen farewell). Valt direct op bij de klant.
+
+**Self-check bij tool call #10**: heb ik genoeg? Match terug tegen CustomerQuestion. Begin met schrijven.
+
+Gedetailleerde uitleg staat onder "Anti-patterns (observed in real runs)" later in dit document — dit is de samenvatting voor je working memory.
+
+---
+
 ### Step 1: Read the Ticket
 
 Use `getConversationSummary` and `getThreads` (in parallel) to get:
@@ -125,7 +149,7 @@ Uit `drs.package-search(client_id, limit: 50)` krijg je alle domeinen die de kla
 
 **Pakkettype-check voor features (SSH/SFTP):**
 
-`drs.package-search(client_id)` retourneert product_name per package. `Start` en legacy `S`/`M` hebben geen SSH. Plus, Pro, legacy L/XL/XXXL wel. Maar: **voor server-inspectie primair de gateway-tools (`mcp__ssh-gateway__*`) gebruiken, niet direct SSH** — zie `playbooks/ssh-access.md`.
+`drs.package-search(client_id)` retourneert product_name per package. `Start` en legacy `S`/`M` hebben geen SSH. Plus, Pro, legacy L/XL/XXXL wel. Maar: **altijd daadwerkelijk SSH proberen** (zie `playbooks/ssh-access.md`) — pakket-naam is context, niet een verbod.
 
 ---
 
