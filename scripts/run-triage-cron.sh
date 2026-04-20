@@ -149,6 +149,34 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
           ] | .[]
         ' 2>/dev/null || true)
       fi
+
+      # Customer's actual question(s) from the first customer thread.
+      # Without this, a review-pass (by another agent or a human) has only the
+      # subject line to judge scope against — which led to false "waste" verdicts
+      # on enrichment calls that were actually answering out-of-subject questions.
+      # Strip HTML, collapse whitespace, single-line, cap at 500 chars.
+      HS_THREADS=$(curl -sf "https://api.helpscout.net/v2/conversations/$CONVERSATION_ID/threads" \
+        -H "Authorization: Bearer $HS_TOKEN" 2>/dev/null || true)
+      if [[ -n "$HS_THREADS" ]]; then
+        CUSTOMER_BODY=$(echo "$HS_THREADS" | jq -r '
+          [._embedded.threads[]? | select(.type == "customer") | .body // ""]
+          | reverse | .[0] // ""
+        ' 2>/dev/null || true)
+        if [[ -n "$CUSTOMER_BODY" && "$CUSTOMER_BODY" != "null" ]]; then
+          CUSTOMER_Q=$(echo "$CUSTOMER_BODY" \
+            | sed -E 's/<br[^>]*>/ | /gi; s/<\/p>/ /gi; s/<[^>]+>//g; s/&nbsp;/ /g; s/&amp;/\&/g; s/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&#39;/'"'"'/g' \
+            | tr '\n\r\t' '   ' \
+            | tr -s ' ' \
+            | sed -E 's/(\| *){2,}/| /g; s/^[[:space:]|]+//; s/[[:space:]|]+$//')
+          if [[ -n "$CUSTOMER_Q" ]]; then
+            if [[ ${#CUSTOMER_Q} -gt 500 ]]; then
+              CUSTOMER_Q="${CUSTOMER_Q:0:500}…"
+            fi
+            HS_META_LINES="${HS_META_LINES}
+CustomerQuestion: ${CUSTOMER_Q}"
+          fi
+        fi
+      fi
     fi
   fi
 fi

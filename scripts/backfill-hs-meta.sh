@@ -39,8 +39,11 @@ for log in "$LOG_DIR"/*.log; do
   # Skip non-triage logs (gateway-health etc.)
   [[ "$(basename "$log")" =~ -ticket- ]] || continue
 
-  # Idempotent: skip if already enriched
-  if grep -q '^Subject: ' "$log"; then
+  has_subject=$(grep -c '^Subject: ' "$log" || true)
+  has_question=$(grep -c '^CustomerQuestion: ' "$log" || true)
+
+  # Fully enriched already — skip.
+  if [[ "$has_subject" -gt 0 && "$has_question" -gt 0 ]]; then
     SKIPPED=$((SKIPPED+1))
     continue
   fi
@@ -50,6 +53,7 @@ for log in "$LOG_DIR"/*.log; do
   CONV_ID=$(echo "$URL" | awk -F/ '{print $(NF-1)}')
   [[ "$CONV_ID" =~ ^[0-9]+$ ]] || { FAILED=$((FAILED+1)); continue; }
 
+  # Fetch conversation + threads in parallel where possible.
   HS_CONV=$(curl -sf "https://api.helpscout.net/v2/conversations/$CONV_ID" \
     -H "Authorization: Bearer $HS_TOKEN" 2>/dev/null || true)
   if [[ -z "$HS_CONV" ]]; then
@@ -58,25 +62,75 @@ for log in "$LOG_DIR"/*.log; do
     continue
   fi
 
-  META=$(echo "$HS_CONV" | jq -r '
-    [
-      "Subject: \(.subject // "(geen onderwerp)")",
-      "Customer: \((.primaryCustomer.first // "") + " " + (.primaryCustomer.last // "") | ltrimstr(" ") | rtrimstr(" "))\(if .primaryCustomer.email then " <" + .primaryCustomer.email + ">" else "" end)",
-      "Status: \(.status // "")",
-      "HSCreatedAt: \(.createdAt // "")",
-      "Mailbox: \(.mailboxId // "")",
-      "Tags: \(.tags // [] | map(.tag) | join(", "))"
-    ] | .[]
-  ' 2>/dev/null || true)
+  # Build the header-meta block only if we don't have Subject yet.
+  META=""
+  if [[ "$has_subject" -eq 0 ]]; then
+    META=$(echo "$HS_CONV" | jq -r '
+      [
+        "Subject: \(.subject // "(geen onderwerp)")",
+        "Customer: \((.primaryCustomer.first // "") + " " + (.primaryCustomer.last // "") | ltrimstr(" ") | rtrimstr(" "))\(if .primaryCustomer.email then " <" + .primaryCustomer.email + ">" else "" end)",
+        "Status: \(.status // "")",
+        "HSCreatedAt: \(.createdAt // "")",
+        "Mailbox: \(.mailboxId // "")",
+        "Tags: \(.tags // [] | map(.tag) | join(", "))"
+      ] | .[]
+    ' 2>/dev/null || true)
+  fi
 
-  [[ -n "$META" ]] || { FAILED=$((FAILED+1)); continue; }
+  # Fetch customer's original question if missing.
+  QUESTION_LINE=""
+  if [[ "$has_question" -eq 0 ]]; then
+    HS_THREADS=$(curl -sf "https://api.helpscout.net/v2/conversations/$CONV_ID/threads" \
+      -H "Authorization: Bearer $HS_TOKEN" 2>/dev/null || true)
+    if [[ -n "$HS_THREADS" ]]; then
+      CUSTOMER_BODY=$(echo "$HS_THREADS" | jq -r '
+        [._embedded.threads[]? | select(.type == "customer") | .body // ""]
+        | reverse | .[0] // ""
+      ' 2>/dev/null || true)
+      if [[ -n "$CUSTOMER_BODY" && "$CUSTOMER_BODY" != "null" ]]; then
+        CUSTOMER_Q=$(echo "$CUSTOMER_BODY" \
+          | sed -E 's/<br[^>]*>/ | /gi; s/<\/p>/ /gi; s/<[^>]+>//g; s/&nbsp;/ /g; s/&amp;/\&/g; s/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&#39;/'"'"'/g' \
+          | tr '\n\r\t' '   ' \
+          | tr -s ' ' \
+          | sed -E 's/(\| *){2,}/| /g; s/^[[:space:]|]+//; s/[[:space:]|]+$//')
+        if [[ -n "$CUSTOMER_Q" ]]; then
+          if [[ ${#CUSTOMER_Q} -gt 500 ]]; then
+            CUSTOMER_Q="${CUSTOMER_Q:0:500}…"
+          fi
+          QUESTION_LINE="CustomerQuestion: $CUSTOMER_Q"
+        fi
+      fi
+    fi
+  fi
 
-  # Insert META after the "Log:" line
+  # Compose final block to inject.
+  BLOCK=""
+  if [[ -n "$META" && -n "$QUESTION_LINE" ]]; then
+    BLOCK="${META}
+${QUESTION_LINE}"
+  elif [[ -n "$META" ]]; then
+    BLOCK="$META"
+  elif [[ -n "$QUESTION_LINE" ]]; then
+    BLOCK="$QUESTION_LINE"
+  fi
+
+  [[ -n "$BLOCK" ]] || { FAILED=$((FAILED+1)); continue; }
+
+  # When adding just the question to an already-enriched log, append it after
+  # the last existing Tags: line. Otherwise inject the full block after Log:.
   TMP=$(mktemp)
-  awk -v meta="$META" '
-    /^Log:[[:space:]]/ && !done { print; print meta; done=1; next }
-    { print }
-  ' "$log" > "$TMP"
+  if [[ "$has_subject" -gt 0 && -n "$QUESTION_LINE" ]]; then
+    awk -v block="$QUESTION_LINE" '
+      /^Tags:/ && !done { print; print block; done=1; next }
+      { print }
+      END { if (!done) print block }
+    ' "$log" > "$TMP"
+  else
+    awk -v block="$BLOCK" '
+      /^Log:[[:space:]]/ && !done { print; print block; done=1; next }
+      { print }
+    ' "$log" > "$TMP"
+  fi
   mv "$TMP" "$log"
   ENRICHED=$((ENRICHED+1))
   # Rate-limit: HS allows ~400 req/min
