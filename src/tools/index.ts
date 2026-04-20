@@ -17,6 +17,7 @@ import {
   SearchInboxesInputSchema,
   SearchConversationsInputSchema,
   GetThreadsInputSchema,
+  GetAttachmentInputSchema,
   GetConversationSummaryInputSchema,
   AdvancedConversationSearchInputSchema,
   MultiStatusConversationSearchInputSchema,
@@ -263,6 +264,37 @@ export class ToolHandler {
             },
           },
           required: ['conversationId'],
+        },
+      },
+      {
+        name: 'getAttachment',
+        description: 'Download an attachment from a conversation. Returns decoded content for text/eml/json, base64 for binary. Attachment IDs are listed in each thread\'s `_embedded.attachments[]` in getThreads output. Use this for .eml forwards, screenshots, logs — anything the customer attached.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: {
+              type: 'string',
+              description: 'The conversation ID (numeric, as string)',
+            },
+            attachmentId: {
+              type: ['string', 'number'],
+              description: 'The attachment ID (from getThreads → thread._embedded.attachments[].id)',
+            },
+            format: {
+              type: 'string',
+              enum: ['auto', 'text', 'base64'],
+              description: "'auto' (default) = text for text/* + message/rfc822, base64 for binaries. 'text' = force UTF-8 decode. 'base64' = raw base64.",
+              default: 'auto',
+            },
+            maxBytes: {
+              type: 'number',
+              description: 'Cap on returned payload size (default 1MB, max 5MB)',
+              minimum: 1,
+              maximum: 5000000,
+              default: 1000000,
+            },
+          },
+          required: ['conversationId', 'attachmentId'],
         },
       },
       {
@@ -899,6 +931,9 @@ export class ToolHandler {
         case 'getThreads':
           result = await this.getThreads(request.params.arguments || {});
           break;
+        case 'getAttachment':
+          result = await this.getAttachment(request.params.arguments || {});
+          break;
         case 'getOriginalSource':
           result = await this.getOriginalSource(request.params.arguments || {});
           break;
@@ -1469,6 +1504,64 @@ export class ToolHandler {
           }, null, 2),
         },
       ],
+    };
+  }
+
+  private async getAttachment(args: unknown): Promise<CallToolResult> {
+    const input = GetAttachmentInputSchema.parse(args);
+
+    // HS /data endpoint returns { data: <base64> } — reliable across all mime types.
+    const response = await helpScoutClient.get<{ data?: string } | string>(
+      `/conversations/${input.conversationId}/attachments/${input.attachmentId}/data`,
+    );
+
+    const base64 = typeof response === 'string'
+      ? response
+      : (response?.data ?? '');
+
+    if (!base64) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'Attachment data field empty',
+            conversationId: input.conversationId,
+            attachmentId: input.attachmentId,
+          }, null, 2),
+        }],
+      };
+    }
+
+    const buf = Buffer.from(base64, 'base64');
+
+    // Sniff mime via thread listing would require extra call. Use format override
+    // + simple heuristic: if the decoded bytes start with a printable ASCII header
+    // (common for .eml and text), treat as text unless format='base64'.
+    const looksText = /^[\x09\x0a\x0d\x20-\x7e]{0,200}/.test(buf.slice(0, 200).toString('binary')) &&
+      // No obvious binary markers (null bytes) in the first 1KB
+      !buf.slice(0, 1024).includes(0);
+
+    const format = input.format === 'auto' ? (looksText ? 'text' : 'base64') : input.format;
+    const truncated = buf.length > input.maxBytes;
+    const slice = truncated ? buf.slice(0, input.maxBytes) : buf;
+
+    const payload = format === 'text'
+      ? slice.toString('utf-8')
+      : slice.toString('base64');
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          conversationId: input.conversationId,
+          attachmentId: input.attachmentId,
+          format,
+          sizeBytes: buf.length,
+          truncated,
+          returnedBytes: slice.length,
+          content: payload,
+        }, null, 2),
+      }],
     };
   }
 

@@ -43,6 +43,17 @@ export const ConversationSchema = z.object({
   threads: z.number(),
 });
 
+export const AttachmentSchema = z.object({
+  id: z.number(),
+  filename: z.string(),
+  mimeType: z.string(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  size: z.number(),
+  state: z.string().optional(),
+});
+export type Attachment = z.infer<typeof AttachmentSchema>;
+
 export const ThreadSchema = z.object({
   id: z.number(),
   type: z.enum(['customer', 'note', 'lineitem', 'phone', 'message', 'forwardparent', 'forwardchild', 'chat', 'beaconchat']),
@@ -78,6 +89,23 @@ export const ThreadSchema = z.object({
   }).nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  _embedded: z.object({
+    attachments: z.array(AttachmentSchema).optional(),
+  }).optional(),
+});
+
+export const GetAttachmentInputSchema = z.object({
+  conversationId: z.string().regex(/^\d+$/, 'Must be a numeric conversation ID'),
+  attachmentId: z.union([
+    z.string().regex(/^\d+$/, 'Must be a numeric attachment ID'),
+    z.number().int().positive(),
+  ]).transform(v => String(v)),
+  format: z.enum(['auto', 'text', 'base64']).default('auto').describe(
+    "Output format. 'auto' returns text for text/* or message/rfc822 mime types, base64 otherwise. 'text' forces UTF-8 decode. 'base64' returns raw base64.",
+  ),
+  maxBytes: z.number().int().positive().max(5_000_000).default(1_000_000).describe(
+    'Safety cap on returned payload size (decoded for text, raw base64 length is ~1.33x this).',
+  ),
 });
 
 // MCP Tool Input Schemas

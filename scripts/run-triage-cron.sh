@@ -8,6 +8,12 @@
 # Usage (cron):
 #   */5 * * * * /home/claude/projects/kohelpscout/help-scout-mcp-server/scripts/run-triage-cron.sh >/dev/null 2>&1
 #
+# Usage (manual, one specific ticket — bypasses the Koos-queue pick):
+#   scripts/run-triage-cron.sh https://secure.helpscout.net/conversation/<convId>/<ticketId>
+#
+# When a URL arg is provided, next-koos-ticket.sh is skipped and the wrapper
+# runs the full triage pipeline (HS meta + streaming + usage) on that one ticket.
+#
 # Exit codes:
 #   0  triage ran successfully, no ticket to pick up, or gateway unhealthy (no-op)
 #   1  lock already held (another run in progress)
@@ -63,30 +69,37 @@ if [[ "$HEALTH_CODE" != "200" ]] || ! echo "$HEALTH_BODY" | grep -q '"status":"o
   exit 0
 fi
 
-# --- Pick next ticket ------------------------------------------------------
-set +e
-URL=$("$SCRIPT_DIR/next-koos-ticket.sh")
-PICK_EXIT=$?
-set -e
+# --- Pick next ticket (or use URL override) --------------------------------
+# When a URL is passed as $1, skip the Koos-queue pick and use that ticket.
+if [[ $# -ge 1 && "$1" =~ ^https?:// ]]; then
+  URL="$1"
+  printf '%s gateway=ok hs=ok source=manual\n' "$(date -Iseconds)" >> "$HEALTH_LOG"
+  echo "manual trigger: $URL" >&2
+else
+  set +e
+  URL=$("$SCRIPT_DIR/next-koos-ticket.sh")
+  PICK_EXIT=$?
+  set -e
 
-if [[ $PICK_EXIT -eq 2 ]]; then
-  # HS API unreachable (OAuth2 or fetch failed). Log & treat as no-op so cron
-  # doesn't keep alerting on it — we'll see it in cron-health.log instead.
-  printf '%s gateway=ok hs=down exit=%s\n' "$(date -Iseconds)" "$PICK_EXIT" >> "$HEALTH_LOG"
-  exit 0
-fi
+  if [[ $PICK_EXIT -eq 2 ]]; then
+    # HS API unreachable (OAuth2 or fetch failed). Log & treat as no-op so cron
+    # doesn't keep alerting on it — we'll see it in cron-health.log instead.
+    printf '%s gateway=ok hs=down exit=%s\n' "$(date -Iseconds)" "$PICK_EXIT" >> "$HEALTH_LOG"
+    exit 0
+  fi
 
-# Positive proof-of-life: pre-flight all green.
-printf '%s gateway=ok hs=ok\n' "$(date -Iseconds)" >> "$HEALTH_LOG"
+  # Positive proof-of-life: pre-flight all green.
+  printf '%s gateway=ok hs=ok\n' "$(date -Iseconds)" >> "$HEALTH_LOG"
 
-if [[ $PICK_EXIT -eq 1 ]]; then
-  # no qualifying ticket
-  exit 0
-fi
+  if [[ $PICK_EXIT -eq 1 ]]; then
+    # no qualifying ticket
+    exit 0
+  fi
 
-if [[ $PICK_EXIT -ne 0 ]]; then
-  echo "ERROR: next-koos-ticket.sh exited $PICK_EXIT" >&2
-  exit 2
+  if [[ $PICK_EXIT -ne 0 ]]; then
+    echo "ERROR: next-koos-ticket.sh exited $PICK_EXIT" >&2
+    exit 2
+  fi
 fi
 
 if [[ -z "$URL" ]]; then
@@ -140,33 +153,17 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   fi
 fi
 
-# --- Run triage, capture everything ---------------------------------------
-# Use --output-format json so we can extract token usage + cost per run.
-# The JSON has { result: <markdown reply>, usage: {...}, total_cost_usd, duration_ms, ... }
-# We parse result into the log body (so logs still read as markdown) and append
-# a "Usage: ..." footer line that the triage-viewer parses.
+# --- Run triage with STREAMING output -------------------------------------
+# --output-format stream-json emits one NDJSON event per line as they arrive.
+# We format each event into a human-readable line and append to the log live,
+# so `tail -f <log>` shows the run in progress. The viewer's SSE watcher also
+# re-renders incrementally. `tee >(...)` forks the stream so we can capture
+# the final `result` event separately for usage/cost extraction.
 cd "$REPO_ROOT"
-CLAUDE_JSON=$(mktemp)
-trap 'rm -f "$CLAUDE_JSON"' EXIT
+RESULT_FILE=$(mktemp)
+trap 'rm -f "$RESULT_FILE"' EXIT
 
-if timeout 25m claude -p "/triage $URL" --output-format json > "$CLAUDE_JSON" 2>&1; then
-  CLAUDE_EXIT=0
-else
-  CLAUDE_EXIT=$?
-fi
-
-# Extract fields (jq is a dependency; if missing or JSON malformed, fall back to raw).
-RESULT_TEXT=""
-USAGE_LINE=""
-if command -v jq >/dev/null && jq -e . "$CLAUDE_JSON" >/dev/null 2>&1; then
-  RESULT_TEXT=$(jq -r '.result // ""' "$CLAUDE_JSON")
-  USAGE_LINE=$(jq -r '
-    if .usage then
-      "input=\(.usage.input_tokens // 0) output=\(.usage.output_tokens // 0) cache_creation=\(.usage.cache_creation_input_tokens // 0) cache_read=\(.usage.cache_read_input_tokens // 0) cost_usd=\(.total_cost_usd // 0) duration_ms=\(.duration_ms // 0) turns=\(.num_turns // 0)"
-    else "" end
-  ' "$CLAUDE_JSON")
-fi
-
+# Header first — needed for HS metadata parsing even if claude fails early.
 {
   echo "=== run-triage-cron.sh ==="
   echo "Started:  $(date -Iseconds)"
@@ -175,19 +172,63 @@ fi
   [[ -n "$HS_META_LINES" ]] && echo "$HS_META_LINES"
   echo "=========================="
   echo
-  if [[ -n "$RESULT_TEXT" ]]; then
-    echo "$RESULT_TEXT"
-  else
-    # Fallback: dump raw captured content so triage failures are still debuggable
-    echo "[no parsed result — raw output follows]"
-    cat "$CLAUDE_JSON"
-  fi
+} > "$LOG_FILE"
+
+set +e
+timeout 25m claude -p "/triage $URL" --output-format stream-json --verbose 2>&1 \
+  | tee >(jq -c 'select(.type == "result")' > "$RESULT_FILE" 2>/dev/null) \
+  | while IFS= read -r line; do
+      t=$(jq -r '.type // empty' <<<"$line" 2>/dev/null)
+      ts=$(date +%H:%M:%S)
+      case "$t" in
+        assistant)
+          # Emit text and tool-calls separately so the viewer can timestamp
+          # tool-boundary lines while leaving assistant text paragraphs clean.
+          jq -r '
+            (.message.content // [])[]
+            | if .type == "text" then "__TEXT__\n" + .text
+              elif .type == "tool_use" then
+                "__TOOL__ " + .name + " " +
+                ((.input // {}) | tostring | if length > 160 then .[0:160] + "…" else . end)
+              else empty end
+          ' <<<"$line" 2>/dev/null | \
+          awk -v ts="$ts" '
+            BEGIN { mode = "" }
+            /^__TEXT__/ { mode = "text"; next }
+            /^__TOOL__ / { sub(/^__TOOL__ /, ""); printf "[%s] [tool] %s\n", ts, $0; mode = ""; next }
+            mode == "text" { print }
+          '
+          ;;
+        user)
+          # Tool results — one stamped line per result.
+          jq -r '
+            (.message.content // [])[]
+            | select(.type == "tool_result")
+            | if .is_error == true then "[tool-error]" else "[tool-ok]" end
+          ' <<<"$line" 2>/dev/null | awk -v ts="$ts" '{ printf "[%s] %s\n", ts, $0 }'
+          ;;
+        system)
+          # Only surface interesting system events; drop hook_started / hook_response noise.
+          jq -r 'if (.subtype // "") == "init" then "[session init]" else empty end' <<<"$line" 2>/dev/null | \
+          awk -v ts="$ts" 'NF { printf "[%s] %s\n", ts, $0 }'
+          ;;
+      esac
+    done >> "$LOG_FILE"
+CLAUDE_EXIT=${PIPESTATUS[0]}
+set -e
+
+USAGE_LINE=""
+if [[ -s "$RESULT_FILE" ]] && jq -e . "$RESULT_FILE" >/dev/null 2>&1; then
+  USAGE_LINE=$(jq -r '"input=\(.usage.input_tokens // 0) output=\(.usage.output_tokens // 0) cache_creation=\(.usage.cache_creation_input_tokens // 0) cache_read=\(.usage.cache_read_input_tokens // 0) cost_usd=\(.total_cost_usd // 0) duration_ms=\(.duration_ms // 0) turns=\(.num_turns // 0)"' "$RESULT_FILE")
+fi
+
+{
   echo
   echo "=========================="
   echo "Finished: $(date -Iseconds)"
   echo "Claude exit: $CLAUDE_EXIT"
   [[ -n "$USAGE_LINE" ]] && echo "Usage: $USAGE_LINE"
-} > "$LOG_FILE"
+} >> "$LOG_FILE"
 
 if [[ $CLAUDE_EXIT -ne 0 ]]; then
   echo "ERROR: claude -p failed (see $LOG_FILE)" >&2

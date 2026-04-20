@@ -532,6 +532,31 @@ De triage cron draait onbeheerd en elke tool-call kost tokens. Vermijd herhaling
 - **Single-file findings**: inline beschrijven, geen markdown-tabel. Tabel alleen bij 3+ bestanden.
 - **Triage report (stdout)**: max 30 regels totaal. Classificatie + samenvatting (2-3 zinnen) + acties genomen + open punten + link. Herhaal NIET de volledige tech note in het rapport — de note staat al op het ticket.
 
+### Anti-patterns (observed in real runs — stop doing these)
+
+Elke regel heeft een voorbeeld-ticket waar dit geld heeft gekost. Ken de regel, herken het bij jezelf tijdens de run, en stop.
+
+1. **DRS is authoritative voor pakket- en domein-state.** Als `drs.package-search` een pakket toont als `Opgezegd`, is het antwoord daar al. Fallback naar `/etc/virtual/domainowners`, `da-user-info` of `find` op de server gaat altijd niks opleveren — opgezegde accounts bestaan server-side niet meer. Dit is een "ik zoek verder want ik vind niks"-loop die 3 extra tool calls kost en niks toevoegt.
+
+2. **Tool-errors zijn signalen, geen uitnodigingen.** Als `da-user-info` of een andere cmd_run faalt, vraag je jezelf af: *had ik deze data nodig voor de reply?* Zo nee — drop hem, verder. Zo ja — check of DRS het antwoord al heeft. Een ToolSearch mid-run naar een alternatief tool voor data die niet load-bearing was, is pure context-vreter. Alleen recovery-searchen als de triage er echt niet zonder kan.
+
+3. **Eén lookup per identifier.** Als je `drs.client-search(field: "email")` een `client_id` hebt, dan is dat de klant. Niet ook `drs.client-search(field: "name")` doen "voor de zekerheid". `drs.client-get(id)` heeft alles. Gerelateerde client-records (2e DRS-record, andere onderneming van dezelfde persoon) alleen opzoeken als ze *in scope van de vraag* zijn — als je in je tech note schrijft "niet relevant voor dit ticket", had je dat niet moeten opzoeken.
+
+4. **Diagnose-scope matcht het symptoom.** "Mail werkt op telefoon, wachtwoord-prompt op desktop" = client-side config. Geen DNS/MX/SPF-scan, geen FCrDNS. De verschillende layers:
+   - *Desktop client werkt niet, telefoon wel* → wachtwoord of SSL-setting in het client-programma
+   - *Mails komen niet aan bij externe ontvanger* → deliverability (SPF/DKIM/DMARC/PTR)
+   - *Mails komen niet binnen* → MX, Exim queue, quota
+   - *Helemaal geen verbinding* → DNS, firewall, server status
+   Kies de laag, kies de tools. Niet "alles maar scannen".
+
+5. **Regel van 3 op zoek-patronen.** Zelfde file, zelfde vraag, escalerende patterns (`exact` → `case-insensitive` → `all servers`) = je zit in een dead-end. Stop. Het antwoord zit niet in die file. Bijna altijd heeft DRS het antwoord al of is het gewoon "bestaat niet".
+
+6. **TodoWrite-drempel.** Voor <5 items OF <5min taken: skip TodoWrite. Doe gewoon. Drie todo-updates voor een 3-items lijst is meer context-churn dan de taak zelf. TodoWrite is voor meerstaps-werk waar een reviewer wil zien wat er gedaan is, niet voor "ik doe even A, B en C".
+
+7. **ToolSearch front-loaded.** Één bulk-select aan het begin van de triage op basis van ticket-categorie (zie Step 2 classificatie). Recovery-ToolSearches mid-run zijn een smell: je planning klopte niet. Als je écht een tool nodig hebt die je niet geladen hebt, laad hem — maar tel mee dat dit volgende keer in de front-load moet.
+
+**Self-check moment:** als je over je 10e tool call heen gaat en de reply nog niet begonnen is, pauzeer. Vraag: *heb ik genoeg om te antwoorden?* Vaak is het antwoord ja, en was het meeste erna exploratie die nergens toe leidde.
+
 ---
 
 ## Important Notes
