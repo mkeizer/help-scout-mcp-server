@@ -7,8 +7,14 @@ Deze doc vervangt het eerdere `mcp-ssh-gateway-scopes.md`. Dat ging uit van een 
 **Eén sec-agent** logt in op elke managed server. De MCP-laag biedt geen shell-toegang aan ons, maar drie soorten operaties:
 
 1. **`fs_list`** — find-achtige listing binnen path-allowlist
-2. **`fs_read`** — full / tail / grep op een bestand binnen path-allowlist
-3. **`cmd_run` + `cmd_mutate`** — aanroepen van vooraf-gedefinieerde **templates** met gevalideerde argument-schema's
+2. **`fs_read`** — full / tail / grep (incl. `recursive=true`) op een bestand binnen path-allowlist
+3. **`fs_hash`** — SHA-256 van een file; met `server: "all"` in één call fleet-wide → drift-detection
+4. **`fs_diff`** — unified diff tussen twee servers (zelfde path) of twee paths op één server
+5. **`cmd_run` + `cmd_mutate`** — aanroepen van vooraf-gedefinieerde **templates** met gevalideerde argument-schema's
+6. **`audit_read`** — query het audit-log van de gateway zelf (wie deed wat, wanneer, successful)
+7. **`da.read` + `da.mutate`** — directe DirectAdmin REST API calls met impersonation
+8. **`mail_*`** — gateway-side mail-deliverability tools (geen SSH, puur DNS/SMTP/parsers)
+9. **`drs.*`** — read-only DRS billing/CRM database
 
 Geen user-switch, geen `su - user`, geen free-form commando's. De veiligheid zit in:
 - **Path allowlist** (alles buiten de lijst is onzichtbaar)
@@ -18,13 +24,14 @@ Geen user-switch, geen `su - user`, geen free-form commando's. De veiligheid zit
 
 ---
 
-## Huidige capabilities (laatste introspect: 2026-04-17)
+## Huidige capabilities (laatste introspect: 2026-04-20)
 
 ### Servers in inventory
 - `vps333` — ✅ bereikbaar
-- `cl07` — ✅ bereikbaar
+- `cl04` — ✅ bereikbaar (directadmin + exim active; auth-fix gelukt sinds 2026-04-17)
+- `cl07` — ✅ bereikbaar (**operational note**: mariadb.service draait in `auto-restart` loop — mysql-processlist faalt daardoor tijdelijk; socket is wel up)
 - `cl08` — ✅ bereikbaar
-- `cl04` — ⚠️ geregistreerd maar **auth faalt** (`All configured authentication methods failed`). Sec-agent SSH key ontbreekt of staat verkeerd. cl01-cl03, cl05-cl06 zijn nog niet enrolled.
+- cl01-cl03, cl05-cl06 zijn nog niet enrolled (prio onbekend).
 
 ### fs path allowlist (46 entries)
 Paths staan in de introspect output. Belangrijke additions sinds de v1-spec:
@@ -34,7 +41,7 @@ Paths staan in de introspect output. Belangrijke additions sinds de v1-spec:
 - `/var/lib/imunify360, /var/lib/imunify360/**`
 - `/var/lib/mysql`, MySQL slow logs etc.
 
-### Read templates (`cmd_run`, 44 stuks)
+### Read templates (`cmd_run`, ~43 stuks — zie `introspect` voor live lijst)
 | Template | Doel |
 |---|---|
 | **CloudLinux** |
@@ -135,6 +142,23 @@ Read-voorbeelden: `/api/db-show/databases`, `/api/domain-tls/{domain}/certs`, `/
 Mutate-voorbeelden: `/api/system-services-actions/service/{service}/reload`.
 Dangerous: `/api/restart`, `/api/version/update`.
 
+### Mail-deliverability (`mail_*`, gateway-side + SSH-assisted)
+Aparte namespace, **geen SSH nodig voor DNS/SMTP checks**. Sluit alles af wat Q8/Q12 wishlist-items beoogden.
+
+| Tool | Doel | SSH? |
+|---|---|---|
+| `mail_auth-check` | Combineert SPF + DMARC + MX + DKIM-selectors + FCrDNS per MX-host | nee |
+| `mail_fcrdns` | PTR → forward A/AAAA, aparte `match_ipv4`/`match_ipv6` flags | nee |
+| `mail_rbl-check` | 12 RBL-zones parallel (zen.spamhaus, spamcop, sorbs, barracuda, uceprotect, 0spam, spfbl, dronebl, justspam, gbudb, surriel, manitu) | nee |
+| `mail_smtp-banner` | SMTP connect + EHLO-capabilities + TLS-cert + HELO/PTR match | nee |
+| `mail_parse-headers` | Raw headers (RFC 2822) → Received-chain, auth-results, alignment, warnings | nee |
+| `mail_rcpt-probe` | RCPT-TO probe; banner → EHLO → MAIL FROM → RCPT → QUIT (geen DATA) | nee |
+| `mail_outbound-verify` | `/etc/virtual/domainips` + Exim mainlog sample + PTR/FCrDNS | ja |
+| `mail_auth-failures` | Top-N mailboxes met SMTP AUTH-failures per user (niet per IP, zoals fail2ban) | ja |
+| `mail_send-count` | Top-N senders per volume (compromise-signal: baseline 20 → 5000/dag) | ja |
+| `mail_forwarder-audit` | `/etc/virtual/*/aliases` uit, filterbaar op `external_only` | ja |
+| `mail_frozen-summary` | Frozen messages in mainlog over tijdsvenster (werkt ook na queue purge) | ja |
+
 ### DRS billing/CRM (read-only)
 Native DRS database-access via `drs.*` — vervangt `scripts/client-lookup.sh` voor structured output.
 
@@ -196,18 +220,24 @@ Bijgewerkt 2026-04-17 op basis van live introspect. ✅ volledig, ⚠️ deels, 
 | **Traffic per user** | ✅ | `traffic-per-user` |
 | **UID → user mapping** | ✅ | `uid-map` |
 | **Disable user cron (first-response)** | ✅ | `da-cron-deny` |
-| **FCrDNS / PTR-forward match** | ⚠️ | losse PTR via `dns`, geen expliciete cross-check helper |
-| **Mail deliverability all-in-one** (SPF/DKIM/DMARC + IP) | ⚠️ | `dkim-overview` + losse DNS/PTR, geen alles-in-één rapport |
-| **SMTP banner + HELO vs PTR** | ❌ | `net-connect` doet TCP/TLS, geen EHLO-capture |
-| **Email header parsing** | ❌ | Geen template |
-| **IP reputation / RBL** | ⚠️ | `whois` geeft geo/ASN, geen RBL-check |
-| **SMTP recipient probe** | ❌ | Geen template |
-| **Exim outbound IP verify** | ⚠️ | `net-connect` probes werken, geen dedicated outbound-IP-vs-`domainips`-check |
-| **FTP login attempts** | ⚠️ | Geen dedicated template, wel via fs_read grep |
+| **FCrDNS / PTR-forward match** | ✅ | `mail_fcrdns` — aparte `match_ipv4`/`match_ipv6` flags |
+| **Mail deliverability all-in-one** (SPF/DKIM/DMARC + IP) | ✅ | `mail_auth-check` — combined rapport |
+| **SMTP banner + HELO vs PTR** | ✅ | `mail_smtp-banner` |
+| **Email header parsing** | ✅ | `mail_parse-headers` — pure gateway-side |
+| **IP reputation / RBL** | ✅ | `mail_rbl-check` — 12 zones parallel |
+| **SMTP recipient probe** | ✅ | `mail_rcpt-probe` |
+| **Exim outbound IP verify** | ✅ | `mail_outbound-verify` |
+| **SMTP AUTH brute-force per mailbox** | ✅ | `mail_auth-failures` (per-mailbox ≠ fail2ban per-IP) |
+| **Compromise detection (sender volume)** | ✅ | `mail_send-count` — baseline-shift signal |
+| **Mail-forwarder audit** | ✅ | `mail_forwarder-audit` (DMARC-risk bij Gmail/Outlook targets) |
+| **Frozen-queue historie** | ✅ | `mail_frozen-summary` — werkt ook na queue purge |
+| **FTP login attempts** | ⚠️ | Geen dedicated template, wel via `fs_read grep` op pureftpd.log |
 | **Mailbox password reset** | ⚠️ | Via DA API mogelijk (`da.mutate`), geen convenience-template |
 | **Active DA-sessies beheren** | ⚠️ | Via DA API mogelijk, geen convenience-template |
-| **File stat** (mtime/ctime) | ⚠️ | `fs_list` geeft mtime, geen ctime |
-| **cl04 bereikbaarheid** | ❌ | **Auth faalt** — enrollment repareren |
+| **File stat** (mtime/ctime/mode/magic) | ⚠️ | `fs_list` geeft mtime, geen ctime; `fs_hash` dekt integrity |
+| **Config drift-detection tussen servers** | ✅ | `fs_hash` + `fs_diff` (zelfde path op N servers) |
+| **Gateway audit-log inzien** | ✅ | `audit_read` — filter op action/server/tijd/success |
+| **cl04 bereikbaarheid** | ✅ | sinds 2026-04-17, enrollment gefixt |
 | **cl01, cl02, cl03, cl05, cl06 enrollment** | ❌ | Niet in inventory |
 
 ---
@@ -585,93 +615,13 @@ echo "{\"quarantine_path\":\"$DEST\",\"original_path\":\"{path}\",\"sha256\":\"$
 
 ---
 
-### Q8 — IP / rDNS / FCrDNS (mail-deliverability) ⚠️ PARTIAL
-> `dns` (PTR), `whois`, `net-connect`, `probe-url` dekken losse checks. Nog geen dedicated FCrDNS cross-check of SMTP banner/HELO capture.
-
-#### `fcrdns-check` (read, gateway-side — geen SSH nodig)
-```
-args: ip: string (IPv4 of IPv6)
-output: { ip, ptr, forward_a, forward_aaaa, fcrdns_match, fcrdns_match_ipv4, fcrdns_match_ipv6, missing_records }
-```
-
-**impl:**
-```bash
-PTR=$(dig +short -x {ip} | sed 's/\.$//' | head -1)
-[ -z "$PTR" ] && { echo '{"ptr":null,"fcrdns_match":false}'; exit; }
-A=$(dig +short A    "$PTR")
-AAAA=$(dig +short AAAA "$PTR")
-# gateway vergelijkt: is {ip} in $A ∪ $AAAA ?
-```
-
----
-
-#### `mail-sender-diag` (read)
-```
-args: domain, dkim_selectors: [...], sender_ip?: string
-output: combineert MX/SPF/DMARC/DKIM/outbound_ip/PTR/FCrDNS
-```
-
-**impl (parallel uitvoeren):**
-```bash
-dig +short MX  {domain}
-dig +short TXT {domain}                               # SPF zit in deze TXT
-dig +short TXT _dmarc.{domain}
-for s in {dkim_selectors[@]}; do
-  dig +short TXT $s._domainkey.{domain}
-done
-# outbound IP per domein:
-grep -E "^{domain}:" /etc/virtual/domainips
-# PTR van configured outbound IP:
-dig +short -x <configured_ip>
-# gateway tekent het overzicht + warnings
-```
-
----
-
-#### `ip-reputation-bulk` (read, gateway-side)
-```
-args: ips: [...] (max 50)
-output per ip: { geo, org, asn, is_datacenter, blocklists: [..] }
-```
-
-**impl:**
-```bash
-# geo via bestaande whois-template (ipinfo.io)
-curl -s https://ipinfo.io/{ip}/json
-# RBL checks via DNS (gratis):
-REV=$(echo {ip} | awk -F. '{print $4"."$3"."$2"."$1}')    # IPv4 reverse
-for bl in zen.spamhaus.org bl.spamcop.net dnsbl.sorbs.net b.barracudacentral.org; do
-  dig +short A "$REV.$bl"   # niet-lege response = listed
-done
-```
-
----
-
-#### `smtp-banner-probe` (read, gateway-side)
-```
-args: host, port (default 25), starttls: bool (default true)
-output: { connected, banner, helo_name, tls_cert_subject, tls_cert_san, helo_matches_ptr, helo_matches_fcrdns }
-```
-
-**impl:**
-```bash
-# swaks doet het allemaal: banner + EHLO + STARTTLS + cert
-swaks --server {host}:{port} --helo swaks-probe.koonline.nl \
-      --tls --quit-after FIRST-EHLO 2>&1
-# alternatief zonder swaks:
-echo -e "EHLO swaks-probe\r\nQUIT\r\n" | \
-  openssl s_client -starttls smtp -connect {host}:{port} -servername {host} 2>&1
-```
-
----
-
-#### `email-header-analyze` (read, gateway-side, geen SSH)
-```
-args: headers: string (raw multiline)
-output: from, return_path, alignment, received_chain, auth_results, warnings
-```
-
-**impl:** pure gateway-side parsing (Go / Node). Geen shell. Parse `Received:`, `Authentication-Results:`, `ARC-*`, `DKIM-Signature` headers.
+### Q8 — IP / rDNS / FCrDNS (mail-deliverability) ✅ DONE
+> Namespace `mail_*` (gateway-side) vervangt alle losse Q8-items:
+> - `mail_fcrdns` → FCrDNS cross-check met aparte v4/v6 flags
+> - `mail_auth-check` → combined SPF/DMARC/MX/DKIM/FCrDNS rapport
+> - `mail_rbl-check` → 12 RBL-zones parallel
+> - `mail_smtp-banner` → EHLO-capture + TLS + HELO-match
+> - `mail_parse-headers` → Received-chain + auth-results parsing
 
 ---
 
@@ -785,45 +735,16 @@ fi
 
 ---
 
-### Q12 — SMTP / mail-delivery dieper ⚠️ PARTIAL
-> `net-connect` doet TCP/TLS. Nog geen EHLO-capture / SMTP banner vs PTR / SMTP recipient probe / outbound-IP-vs-`domainips` verify.
-
-#### `smtp-rcpt-probe` (read, use with care)
-```
-args: recipient (user@domain), mail_from?, use_tls: bool (default true)
-output: { mx_used, connected, tls, ehlo_response, rcpt_response, verdict }
-safety: rate-limit max 10 probes/uur/domein, geen DATA phase
-```
-
-**impl:**
-```bash
-swaks --to {recipient} \
-      --from {mail_from:-postmaster@koonline.nl} \
-      --quit-after RCPT \
-      --tls --helo probe.koonline.nl \
-      --timeout 15 2>&1
-```
-
----
-
-#### `mail-outbound-ip-verify` (read)
-```
-args: domain
-output: { configured_outbound_ip, expected_ptr, actual_exim_sending_ip, mismatch, last_sample_msgid, last_sample_headers_excerpt }
-```
-
-**impl:**
-```bash
-# verwachte outbound IP uit /etc/virtual/domainips:
-CONFIG_IP=$(awk -F: -v d={domain} '$1==d{print $2}' /etc/virtual/domainips)
-# PTR van verwachte IP:
-dig +short -x "$CONFIG_IP"
-# recente mainlog entries voor dit domein — zoek '=> ' en 'H=' regels:
-grep -E "F=<[^@]+@{domain}>" /var/log/exim/mainlog | tail -20
-# of: haal één recent msgid en dump:
-MSGID=$(grep -E "@{domain}" /var/log/exim/mainlog | grep '<=' | tail -1 | awk '{print $3}')
-exim -Mvh "$MSGID"
-```
+### Q12 — SMTP / mail-delivery dieper ✅ DONE
+> Ook via `mail_*` namespace:
+> - `mail_rcpt-probe` — RCPT-TO probe zonder DATA, auto-MX-resolve
+> - `mail_outbound-verify` — `/etc/virtual/domainips` + mainlog sample + PTR/FCrDNS
+>
+> Bonus toevoegingen niet in oorspronkelijke wishlist:
+> - `mail_auth-failures` — per-mailbox SMTP-AUTH brute-force tracking
+> - `mail_send-count` — compromise-detectie via sender-volume baseline
+> - `mail_frozen-summary` — frozen queue historie (werkt ook na purge)
+> - `mail_forwarder-audit` — `/etc/virtual/*/aliases` audit, filter `external_only` voor DMARC-risk
 
 ---
 
@@ -1162,6 +1083,27 @@ Paden die nu ontbreken maar voor triage gewenst zijn:
 
 ---
 
+## Argument-quirks & observed behavior (live-tested 2026-04-20)
+
+Deze argument-schema's wijken af van wat je uit de template-naam zou gokken — handig om te weten voordat je ze aanroept:
+
+| Template | Quirk |
+|---|---|
+| `dns` | Args = `hostnames: string[]` + `record_types: string[]`, maar returns alleen **eerste** type. Roep meermaals aan voor A/MX/TXT apart, of parseer uit `dns-zone-read.raw`. |
+| `svc-status` | Arg heet `services: string[]` (niet `units`). Service-namen zonder `.service` suffix. |
+| `csf-query` | Verplicht `action: "grep"\|"templist"` arg. |
+| `imunify` | `action` enum: `"status"`, `"malware-list"`, `"blacklist-view"` (dash, niet underscore). |
+| `whois` | Args = `ips: string[]` (niet `ip`); returns `byOrg` aggregatie. |
+| `traffic-per-user` | Sorteert **ascending** — top-N geeft laagste verbruikers, niet hoogste. |
+| `letsencrypt-status` | Leest alleen `/etc/letsencrypt/live/`; domeinen met DA-managed wildcard (opgeslagen in DA user-dir) rapporteren `has_cert: false` ondanks werkend cert. |
+| `dns-zone-read` | Veld `serial` is null maar staat wel in `raw`. Parse zelf als je de serial nodig hebt. |
+| `mysql-processlist` (cl07) | Faalt met "MySQL/MariaDB not available via local socket" wanneer mariadb.service in auto-restart-loop staat, ook al is socket up. |
+| `da-user-info` | Retourneert leeg object voor users die niet via DA aangemaakt zijn (bijv. handmatig in `/etc/passwd`). Geen error. |
+| `cms-inventory` | Scope = DA-users. Niet-DA users leveren `installs: []`. |
+| `find-large-files` | `root` moet `/home/{user}` of dieper zijn; niet `/home/*`. |
+
+---
+
 ## Design-principes voor nieuwe templates
 
 1. **Typed args + regex-validatie** — geen free-string op paths, IPs, emails, commands
@@ -1177,31 +1119,17 @@ Paden die nu ontbreken maar voor triage gewenst zijn:
 
 ---
 
-## Prioriteit voor implementatie
+## Openstaande wishlist (na 2026-04-20 audit)
 
-Volgorde gebaseerd op triage-frequentie:
+Alle Q1–Q18 items zijn ✅ DONE. Nog open:
 
-0. **`da-api-get` generic + impersonation** — ontsluit in één klap 50+ endpoints; vervangt half onze huidige wishlist
-1. **`wp-cli`** — onmisbaar voor malware-triage
-2. **`fcrdns-check` + `mail-sender-diag`** — deliverability #1, vervangen 10+ handmatige stappen
-3. **`svc-restart`** — na elke config-edit nodig (nu via DA-API `/api/system-services-actions/...`)
-4. **`da-login-unblock` + `da-login-whitelist-add`** — hoge volume
-5. **Allowlist `/etc/virtual/**`** + **`mail-user-sent`** — deliverability prereq
-6. **`find-large-files` + `user-quota`** — quota-tickets
-7. **`php-suspicious-scan`** — versnelt Imunify-follow-up 15min → 30sec
-8. **`email-header-analyze`** — Gmail "show original" parsing
-9. **`smtp-banner-probe`** — VPS-klanten met eigen MTA
-10. **`file-stat` + `file-integrity`** — incident response polish
-11. **`exim-log-search` + `mail-outbound-ip-verify`** — DKIM envelope-sender
-12. **`tls-cert-inspect` + `letsencrypt-status`** — SSL/LE recurrent
-13. **`user-cron`** — malware-schedules + cron-tickets
-14. **`dns-zone-read`** — legacy-NS tickets
-15. **`redis-status`** — licht, DA Redis use-case
-16. **LVE + Imunify** — zodra `cl0*` in inventory
-17. **`quarantine-file`** — na schone quarantine-flow
-18. **`smtp-rcpt-probe`** — laatste, RBL-flag risk
-19. **`mysql-processlist` + `ftp-user-attempts`** — nice-to-have
-20. **`webserver-errors`** — helper, `fs_read grep` werkt al
+1. **`ftp-user-attempts`** — FTP-login-parser (pureftpd.log / proftpd.log). Fallback is `fs_read grep`, maar dedicated template zou useful zijn.
+2. **`file-stat` + `file-integrity`** — polish-templates: ctime/magic (`fs_hash` dekt sha256 al, `fs_list` geeft mtime).
+3. **Mailbox password reset convenience-template** — nu via `da.mutate POST /api/change-password`, maar een `mailbox-pw-reset` wrapper met argument-validatie scheelt een roundtrip.
+4. **Active DA-sessies beheren** — `da.read GET /api/sessions` + `da.mutate POST /api/sessions/destroy/{id}` wrapper.
+5. **cl01-03, cl05-06 enrollment** — uitrollen als die servers in productie komen.
+6. **DRS fleet-wide `logboek-search flagged=true`** — alleen bouwen als DRS actief flagging gebruikt.
+7. **Argument-quirks normaliseren** — bovenstaande tabel impliceert dat enkele templates een arg-naming pass kunnen gebruiken (`dns.record_types` één-per-call, `traffic-per-user` default sort descending, `letsencrypt-status` ook DA-cert-dir scannen).
 
 ---
 
