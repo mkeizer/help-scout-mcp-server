@@ -24,7 +24,30 @@ Geen user-switch, geen `su - user`, geen free-form commando's. De veiligheid zit
 
 ---
 
-## Huidige capabilities (laatste introspect: 2026-04-20)
+## Huidige capabilities (laatste introspect: 2026-04-21)
+
+### Recent gateway fixes (2026-04-21)
+
+Gateway-team heeft 9 van de 10 friction points uit de audit van 2026-04-20 opgelost. Live geverifieerd via introspect op 2026-04-21:
+
+| # | Fix | Status |
+|---|---|---|
+| A1 | `dns.hostnames → hosts`, accepteert string of array | ✅ |
+| A2 | `svc-status.services` accepteert nu ook enkele string | ✅ |
+| A3 | `find-large-files.root → path` | ✅ |
+| A4 | `whois.ips → ip`, accepteert string of array | ✅ |
+| B5 | `csf-query` description met expliciete voorbeelden voor beide modes | ✅ |
+| B6 | `imunify` accepteert `malware_list` als alias naast `malware-list` | ✅ |
+| B7 | `proc-inspect.pid` description wijst naar `processes` workflow | ✅ |
+| C8 | `/etc/virtual` bare pad in allowlist (naast `/etc/virtual/**`) | ✅ |
+| C9 | `/home` niet-reproduceerbaar (oude audit-actions, geen fix) | — |
+| D10 | `da.read` description: gebruik altijd `da.endpoints` eerst | ✅ |
+
+Consequenties voor triage: enkelvoudige lookups (`dns({hosts: "domain.nl"})`, `whois({ip: "1.2.3.4"})`, `svc-status({services: "nginx"})`) werken nu zonder array-wrapping — scheelt argument-gepriegel en voorkomt "expected array got string"-fouten die Sonnet en Haiku vaak maakten.
+
+---
+
+
 
 ### Servers in inventory
 - `vps333` — ✅ bereikbaar
@@ -1109,19 +1132,22 @@ Deze argument-schema's wijken af van wat je uit de template-naam zou gokken — 
 
 | Template | Quirk |
 |---|---|
-| `dns` | Args = `hostnames: string[]` + `record_types: string[]`, maar returns alleen **eerste** type. Roep meermaals aan voor A/MX/TXT apart, of parseer uit `dns-zone-read.raw`. |
-| `svc-status` | Arg heet `services: string[]` (niet `units`). Service-namen zonder `.service` suffix. |
-| `csf-query` | Verplicht `action: "grep"\|"templist"` arg. |
-| `imunify` | `action` enum: `"status"`, `"malware-list"`, `"blacklist-view"` (dash, niet underscore). |
-| `whois` | Args = `ips: string[]` (niet `ip`); returns `byOrg` aggregatie. |
+| `dns` | Args = `hosts: string \| string[]` (2026-04-21: hernoemd van `hostnames`, accepteert nu ook enkele string). Supports A, AAAA, MX, TXT, PTR, NS, CNAME via `record_types`. |
+| `svc-status` | Arg heet `services: string \| string[]` (2026-04-21: accepteert nu ook enkele string, niet alleen array). Service-namen zonder `.service` suffix. |
+| `csf-query` | Verplicht `action: "grep"\|"templist"` arg (2026-04-21: description heeft nu expliciete voorbeelden voor beide modes). |
+| `imunify` | `action` enum: `"status"`, `"malware-list"`, `"blacklist-view"` (2026-04-21: `"malware_list"` met underscore wordt ook geaccepteerd als alias, maar dash blijft canonical). |
+| `whois` | Args = `ip: string \| string[]` (2026-04-21: hernoemd van `ips`, accepteert nu ook enkele string). Returns `byOrg` aggregatie. |
 | `traffic-per-user` | Sorteert **ascending** — top-N geeft laagste verbruikers, niet hoogste. |
 | `letsencrypt-status` | Leest alleen `/etc/letsencrypt/live/`; domeinen met DA-managed wildcard (opgeslagen in DA user-dir) rapporteren `has_cert: false` ondanks werkend cert. |
 | `dns-zone-read` | Veld `serial` is null maar staat wel in `raw`. Parse zelf als je de serial nodig hebt. |
 | `mysql-processlist` (cl07) | Faalt met "MySQL/MariaDB not available via local socket" wanneer mariadb.service in auto-restart-loop staat, ook al is socket up. |
 | `da-user-info` | Retourneert leeg object voor users die niet via DA aangemaakt zijn (bijv. handmatig in `/etc/passwd`). Geen error. |
 | `cms-inventory` | Scope = DA-users. Niet-DA users leveren `installs: []`. |
-| `find-large-files` | `root` moet `/home/{user}` of dieper zijn; niet `/home/*`. |
+| `find-large-files` | Arg heet `path` (2026-04-21: hernoemd van `root`). Moet `/home/{user}` of dieper zijn; niet `/home/*`. |
+| `proc-inspect` | Arg = `pid: integer` (2026-04-21: description wijst expliciet door naar `processes` workflow voor PID-discovery). |
 | `da-user-info` | Arg heet `user` (niet `username`, ondanks dat de schema-description "DirectAdmin username" zegt). Sonnet maakt hier aantoonbaar fouten. |
+| `da.read` / `da.mutate` | 2026-04-21: description wijst nu expliciet op `da.endpoints` als eerste stap — gebruik die om endpoints te zoeken vóór je `da.read`/`da.mutate` aanroept. |
+| `/etc/virtual` | 2026-04-21: bare pad (`/etc/virtual`) staat nu in de allowlist naast `/etc/virtual/**`, zodat `fs_list` op de directory zelf werkt. |
 
 ---
 

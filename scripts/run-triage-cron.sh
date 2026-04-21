@@ -107,9 +107,11 @@ if [[ -z "$URL" ]]; then
   exit 0
 fi
 
-# Extract the ticket ID for the log filename
-TICKET_ID=$(echo "$URL" | awk -F/ '{print $NF}')
-CONVERSATION_ID=$(echo "$URL" | awk -F/ '{print $(NF-1)}')
+# Extract the ticket ID for the log filename. Strip ?query and #fragment so
+# manual URLs copied from the HS UI (which append ?viewId=...) produce clean
+# filenames that don't break globs or viewer watchers.
+TICKET_ID=$(echo "$URL" | awk -F/ '{print $NF}' | sed 's/[?#].*$//')
+CONVERSATION_ID=$(echo "$URL" | awk -F/ '{print $(NF-1)}' | sed 's/[?#].*$//')
 TS=$(date +%Y-%m-%dT%H%M%S)
 LOG_FILE="$LOG_DIR/${TS}-ticket-${TICKET_ID}.log"
 REPORT_FILE="${LOG_FILE%.log}.report.json"
