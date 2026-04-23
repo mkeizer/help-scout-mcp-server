@@ -81,6 +81,46 @@ import {
 import { reportToolHandler } from './reports.js';
 import { docsToolHandler } from './docs.js';
 
+const BINARY_MAGIC_HEX = new Set([
+  '25504446', // %PDF
+  '89504e47', // PNG
+  '47494638', // GIF ("GIF8")
+  '504b0304', // ZIP / docx / xlsx / pptx / odt
+  '504b0506', // ZIP empty archive
+  '504b0708', // ZIP spanned
+  '1f8b0800', // gzip
+  '52617221', // "Rar!"
+  '377abcaf', // 7z
+]);
+
+/**
+ * Decide whether an attachment buffer should be returned as text or base64.
+ * Magic-byte sniff for common binary formats (PDFs and images start with
+ * ASCII-looking headers but contain high-bit bytes downstream that UTF-8
+ * decode would mangle), then a printable-ASCII ratio over the first 2KB as
+ * fallback. .eml and plain-text logs are ASCII-heavy; binary formats are not.
+ */
+export function resolveAttachmentFormat(
+  buf: Buffer,
+  requested: 'auto' | 'text' | 'base64',
+): 'text' | 'base64' {
+  if (requested !== 'auto') return requested;
+
+  const head4 = buf.slice(0, 4).toString('hex');
+  const head3 = buf.slice(0, 3).toString('hex');
+  if (BINARY_MAGIC_HEX.has(head4) || head3 === 'ffd8ff') return 'base64';
+
+  const sample = buf.slice(0, 2048);
+  if (sample.includes(0)) return 'base64';
+
+  let printable = 0;
+  for (const b of sample) {
+    if (b === 0x09 || b === 0x0a || b === 0x0d || (b >= 0x20 && b <= 0x7e)) printable++;
+  }
+  const textRatio = sample.length > 0 ? printable / sample.length : 0;
+  return textRatio >= 0.9 ? 'text' : 'base64';
+}
+
 export class ToolHandler {
   private callHistory: string[] = [];
   private currentUserQuery?: string;
@@ -1533,15 +1573,7 @@ export class ToolHandler {
     }
 
     const buf = Buffer.from(base64, 'base64');
-
-    // Sniff mime via thread listing would require extra call. Use format override
-    // + simple heuristic: if the decoded bytes start with a printable ASCII header
-    // (common for .eml and text), treat as text unless format='base64'.
-    const looksText = /^[\x09\x0a\x0d\x20-\x7e]{0,200}/.test(buf.slice(0, 200).toString('binary')) &&
-      // No obvious binary markers (null bytes) in the first 1KB
-      !buf.slice(0, 1024).includes(0);
-
-    const format = input.format === 'auto' ? (looksText ? 'text' : 'base64') : input.format;
+    const format = resolveAttachmentFormat(buf, input.format);
     const truncated = buf.length > input.maxBytes;
     const slice = truncated ? buf.slice(0, input.maxBytes) : buf;
 
