@@ -1,6 +1,6 @@
 {
   "name": "help-scout-mcp-server",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "mcpName": "io.github.drewburchfield/help-scout-mcp",
   "description": "Search Help Scout conversations, customers, organizations, threads, and inboxes with AI assistants",
   "main": "dist/index.js",

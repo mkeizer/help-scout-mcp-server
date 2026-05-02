@@ -308,7 +308,7 @@ export class ToolHandler {
       },
       {
         name: 'getAttachment',
-        description: 'Download an attachment from a conversation. Returns decoded content for text/eml/json, base64 for binary. Attachment IDs are listed in each thread\'s `_embedded.attachments[]` in getThreads output. Use this for .eml forwards, screenshots, logs — anything the customer attached.',
+        description: 'Download an attachment from a conversation. Returns decoded content for text/eml/json, base64 for binary. **For images (PNG/JPEG/GIF/WebP up to 5 MB) the response also includes an MCP image content block, so you can SEE the image directly — use this to read screenshots customers attach.** Attachment IDs are listed in each thread\'s `_embedded.attachments[]` in getThreads output. Use this for .eml forwards, screenshots, logs — anything the customer attached.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1577,24 +1577,71 @@ export class ToolHandler {
     const truncated = buf.length > input.maxBytes;
     const slice = truncated ? buf.slice(0, input.maxBytes) : buf;
 
+    // Detect image MIME via magic bytes so we can return an MCP `image` content
+    // block (Claude vision-readable) alongside the JSON metadata. Without this
+    // the agent only gets base64 wrapped in text and cannot actually "see" the
+    // attachment — defeating the whole point for screenshot-driven triage.
+    const head4 = buf.slice(0, 4).toString('hex');
+    const head3 = buf.slice(0, 3).toString('hex');
+    const head12 = buf.slice(0, 12).toString('hex');
+    let imageMime: string | null = null;
+    if (head4 === '89504e47') imageMime = 'image/png';
+    else if (head4 === '47494638') imageMime = 'image/gif';
+    else if (head3 === 'ffd8ff') imageMime = 'image/jpeg';
+    else if (head4 === '52494646' && head12.slice(16, 24) === '57454250') imageMime = 'image/webp';
+
+    // Cap inline-image return at 5 MB. Above that, agents typically don't need
+    // the full image (token cost spirals) and the metadata + first-N-bytes
+    // base64 stays available via the text block.
+    const IMAGE_INLINE_CAP = 5 * 1024 * 1024;
+    const returnAsImage = imageMime !== null && format === 'base64' && !truncated && slice.length <= IMAGE_INLINE_CAP;
+
     const payload = format === 'text'
       ? slice.toString('utf-8')
       : slice.toString('base64');
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          conversationId: input.conversationId,
-          attachmentId: input.attachmentId,
-          format,
-          sizeBytes: buf.length,
-          truncated,
-          returnedBytes: slice.length,
-          content: payload,
-        }, null, 2),
-      }],
+    const metadata: Record<string, unknown> = {
+      conversationId: input.conversationId,
+      attachmentId: input.attachmentId,
+      format,
+      sizeBytes: buf.length,
+      truncated,
+      returnedBytes: slice.length,
     };
+
+    if (imageMime) {
+      metadata.mimeType = imageMime;
+      metadata.viewableAsImage = returnAsImage;
+      if (!returnAsImage) {
+        // Explain why the image block was skipped so the agent knows whether
+        // it can act on the data (e.g. truncated → ask for a smaller copy).
+        metadata.imageBlockSkippedReason = truncated
+          ? 'attachment exceeded maxBytes; bytes truncated, image block omitted to avoid sending a partial image'
+          : slice.length > IMAGE_INLINE_CAP
+            ? `attachment >${IMAGE_INLINE_CAP} bytes; image block omitted to limit tokens`
+            : 'unknown';
+      }
+    }
+
+    // Only include base64 inline in JSON when we are NOT returning a separate
+    // image block — otherwise the same bytes ship twice (token waste).
+    if (!returnAsImage) {
+      metadata.content = payload;
+    }
+
+    const blocks: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [
+      { type: 'text', text: JSON.stringify(metadata, null, 2) },
+    ];
+
+    if (returnAsImage && imageMime) {
+      blocks.push({
+        type: 'image',
+        data: slice.toString('base64'),
+        mimeType: imageMime,
+      });
+    }
+
+    return { content: blocks };
   }
 
   private async getOriginalSource(args: unknown): Promise<CallToolResult> {
