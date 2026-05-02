@@ -374,18 +374,56 @@ Hoi [naam],<br/><br/>
 
 ---
 
-### Step 7: Apply Tags
+### Step 7: Apply Tags — Smart Tag Manager
 
-Use `updateConversationTags` to add relevant tags.
+**Hard budget: max 3 tags after triage.** `updateConversationTags` is a SET operation — it replaces everything. That's by design. Each triage re-picks the best 3 from scratch based on the ticket's current state. **Do not blindly preserve existing tags.** Tags from prior runs that no longer reflect the current state (`needs-human` after the issue was resolved, `503` after the outage is over) must be dropped. Preservation is the bug we're fixing here.
 
-**Tag conventions:**
-- Use lowercase, hyphenated tags
-- Use category tags: `dns`, `e-mail`, `hosting`, `ssl`, `wordpress`, `directadmin`, `factuur`, `domein`
-- Use issue-specific tags: `glue-records`, `php-versie`, `spam`, `gehackt`, `migratie`
-- Add `ai-resolved` tag when the ticket is fully resolved by AI
-- Do NOT overdo it — 1 to 3 tags is enough
+Tags are indexes for future search and routing. 3 well-chosen tags beat 8 accumulated ones every time.
 
-**Important:** `updateConversationTags` replaces ALL tags. If the conversation already has tags, include the existing ones in your list to preserve them.
+**Slot model — at most one tag per slot, ≤3 total:**
+
+| Slot | Purpose | Examples | Required |
+|---|---|---|---|
+| **Category** | Topic bucket | `hosting`, `wordpress`, `e-mail`, `dns`, `directadmin`, `domein`, `factuur`, `administratief`, `security`, `niet-onze-hosting` | Yes (1) |
+| **Issue** | Specific problem | `gehackt`, `spoofing`, `spam`, `php-versie`, `migratie`, `503`, `glue-records`, `quota-full`, `certificate-expired`, `ssl`, `ftp`, `imap`, `dkim`, `dmarc`, `content-verwijdering`, `wordpress-com`, … | Optional |
+| **State** | Workflow signal | `needs-human`, `needs-human-urgent`, `recurrence-escalated`, `transient-closed`, `closed-no-reply`, `ai-resolved`, noise pair (see below) | Optional |
+
+**Noise exception — Imunify / automated alerts** (see `memory/reference_noise_tag_scheme.md`):
+The umbrella pair `auto-noise` + one type tag (`imunify-scan`, `domain-notify`, `cert-retry`, `statuscake`, `backup-error`, `bounce`, `da-mail-warning`, `spam-marketing`, `bnamed-auto-handled`, `bnamed-needs-escalation`, `bnamed-callback-fail`) fills **two slots together**. Leaves 1 slot for Category if informative, or skip it.
+
+**Dominance / exclusion rules — apply before calling `updateConversationTags`:**
+
+1. **Only one Category.** If two would fit, pick the more specific one. `wordpress` > `hosting`. `factuur` > `administratief` for billing. `niet-onze-hosting` > `domein` when the whole point is the site isn't ours.
+2. **Only one escalation State.** Priority: `recurrence-escalated` > `needs-human-urgent` > `needs-human`. Recurrence implies urgency implies human — never tag two from this set on the same ticket.
+3. **Closed terminates escalation.** If the ticket ends in `closed-no-reply` or `transient-closed`: drop all `needs-human*` and `recurrence-escalated`. You can't close and ask for help in the same breath — pick one (Step 5b's "critical rule" applies to tags too).
+4. **`ai-resolved` is incompatible with escalation.** If a human needs to act, it's not AI-resolved — drop `ai-resolved`, keep the escalation tag.
+5. **Don't double up on signals.** If `gehackt` is the Issue, don't also tag `malware` — same thing. If `spam` is the Issue, don't also tag `phishing` unless it's materially a different axis.
+
+**Pruning algorithm:**
+
+1. Gather candidates: existing tags + any new ones this run suggests.
+2. Apply rules 1–5 above — strike dominated/redundant tags.
+3. Bucket survivors into Category / Issue / State. Force each bucket to ≤1.
+4. If total > 3 (can only happen with the noise pair + Category + Issue = 4): drop the Issue slot.
+5. Call `updateConversationTags` with the final ≤3. Do not include anything outside this set.
+
+**Tag naming conventions:**
+- Lowercase, hyphenated (`php-versie`, `niet-onze-hosting`)
+- No dots, no camelCase, no spaces
+- Prefer existing tags in the inbox's tag cloud over coining new ones — tag proliferation defeats search.
+- New tag smell: if you're coining a 3rd new tag this week, pause and ask whether an existing one fits.
+
+**Worked example — ticket #3295280879 (the mess that prompted this rule):**
+
+Inherited from prior runs (8 tags):
+`gehackt`, `hosting`, `needs-human`, `needs-human-urgent`, `recurrence-escalated`, `spoofing`, `ssl`, `wordpress`
+
+Walkthrough:
+- Rule 1 — Category: `hosting` vs `wordpress` → pick `wordpress` (more specific). Drop `hosting`.
+- Rule 2 — State: `needs-human`, `needs-human-urgent`, `recurrence-escalated` → keep only `recurrence-escalated`. Drop the other two.
+- Rule 5 — Issue: `gehackt`, `spoofing`, `ssl` all fit. `gehackt` is the core reported problem. `spoofing` and `ssl` are side-concerns — over budget.
+
+Final 3: **`wordpress`, `gehackt`, `recurrence-escalated`** — three tags that together tell the whole story (WordPress site, compromised, recurring and needs a human).
 
 ---
 
@@ -420,9 +458,16 @@ Output a summary to the user (the staff member) with:
 
 Write a JSON report alongside the log so we can aggregate suggestions across runs. The viewer at `/home/claude/projects/triage-viewer` reads these and shows patterns — "3 tickets wanted DirectAdmin tool X", "2x no KB article for Y" — which Maarten en Pablo forward to MCP/API/docs owners.
 
-**Path:** `$TRIAGE_REPORT_PATH` (exported by the cron wrapper, ending in `.report.json`).
+**Path:** `$TRIAGE_REPORT_PATH` if exported by the cron wrapper. Otherwise derive deterministically from the ticket number:
 
-**If the env var is not set** (manual run, not via cron): skip this step silently.
+```bash
+LOGS_DIR="/home/claude/projects/kohelpscout/help-scout-mcp-server/logs/triage"
+TS=$(date +%Y-%m-%dT%H%M%S)
+TICKET_NUM=$(echo "$URL" | awk -F/ '{print $NF}' | sed 's/[?#].*$//')
+REPORT_PATH="${TRIAGE_REPORT_PATH:-$LOGS_DIR/$TS-ticket-$TICKET_NUM.report.json}"
+```
+
+This makes the step work in both contexts — the cron path uses the wrapper-exported env var (timestamp matches the log file), Paperclip context derives a fresh path with the same naming convention. The triage-viewer reads any `*.report.json` in `LOGS_DIR` regardless of who created it.
 
 **When to write:** ALWAYS, regardless of earlier failures. Even a partial report with `"resolution": "failed"` is useful. Do NOT block on tool errors elsewhere.
 
@@ -517,11 +562,11 @@ Calibration: do not invent retrospectives to look thoughtful. If the run was eff
 | `no-action` | Left open without changes (unclear intent, awaiting clarification) |
 | `failed` | Triage couldn't complete (API errors, etc.) — describe in `frictionPoints` |
 
-**Write it via Bash heredoc** (quoted delimiter prevents shell expansion inside the JSON):
+**Write it via Bash heredoc** (quoted delimiter prevents shell expansion inside the JSON). Use the `$REPORT_PATH` derived above — works in both cron and Paperclip contexts:
 
 ```bash
-if [ -n "${TRIAGE_REPORT_PATH:-}" ]; then
-  cat > "$TRIAGE_REPORT_PATH" <<'JSON'
+mkdir -p "$(dirname "$REPORT_PATH")"
+cat > "$REPORT_PATH" <<'JSON'
 {
   "ticket": "...",
   "ticketUrl": "...",
@@ -535,13 +580,12 @@ if [ -n "${TRIAGE_REPORT_PATH:-}" ]; then
   "recurringPattern": null
 }
 JSON
-fi
 ```
 
 **Validation:** must be valid JSON. If you're unsure, pipe through `python3 -m json.tool` to sanity-check:
 
 ```bash
-python3 -m json.tool "$TRIAGE_REPORT_PATH" > /dev/null && echo "report ok"
+python3 -m json.tool "$REPORT_PATH" > /dev/null && echo "report ok ($REPORT_PATH)"
 ```
 
 **Guidelines for calibration:**
