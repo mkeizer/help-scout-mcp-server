@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -9,6 +10,7 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import { validateConfig } from './utils/config.js';
 import { logger } from './utils/logger.js';
@@ -16,6 +18,7 @@ import { helpScoutClient, type PaginatedResponse } from './utils/helpscout-clien
 import { resourceHandler } from './resources/index.js';
 import { toolHandler } from './tools/index.js';
 import { promptHandler } from './prompts/index.js';
+import { loadAcceptedTokens, authorizeRequest } from './utils/auth-middleware.js';
 import type { Inbox } from './schema/types.js';
 
 export class HelpScoutMCPServer {
@@ -238,21 +241,117 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
         logger.info('Help Scout API connection established (verified during inbox discovery)');
       }
 
-      // Start the server
-      const transport = new StdioServerTransport();
-      await this.server.connect(transport);
-      
-      logger.info('Help Scout MCP Server started successfully');
-      console.error('Help Scout MCP Server started and listening on stdio');
-      
-      // Keep the process running
-      process.stdin.resume();
+      // Choose transport based on env. MCP_HTTP_PORT (set) → HTTP mode for
+      // a long-running deployment behind a reverse-proxy (hsmcp.invoker.nl
+      // pattern). Unset → original stdio mode for npx-spawned and local dev.
+      const httpPortRaw = process.env.MCP_HTTP_PORT;
+      if (httpPortRaw) {
+        const port = Number.parseInt(httpPortRaw, 10);
+        if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+          throw new Error(`MCP_HTTP_PORT must be a valid TCP port (got: ${httpPortRaw})`);
+        }
+        await this.startHttp(port);
+      } else {
+        const transport = new StdioServerTransport();
+        await this.server.connect(transport);
+        logger.info('Help Scout MCP Server started successfully');
+        console.error('Help Scout MCP Server started and listening on stdio');
+        // Keep the process running
+        process.stdin.resume();
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error('Failed to start server', { error: errorMessage });
       console.error('MCP Server startup failed:', errorMessage);
       process.exit(1);
     }
+  }
+
+  /**
+   * Start in HTTP mode behind a reverse proxy. Uses the MCP SDK's
+   * StreamableHTTPServerTransport in stateless mode (no session-id
+   * tracking — each request is independent, simpler for a long-running
+   * service that doesn't need stickiness).
+   *
+   * Endpoint: POST /mcp (and GET for SSE polling, per the spec).
+   * Auth: Authorization: Bearer <token> against HSMCP_BEARER_TOKENS.
+   * Anything else returns 404. /healthz returns 200 OK without auth so
+   * upstream proxies (Traefik, load-balancers) can probe liveness.
+   */
+  private async startHttp(port: number): Promise<void> {
+    const acceptedTokens = loadAcceptedTokens();
+    if (acceptedTokens.size === 0) {
+      throw new Error('HSMCP_BEARER_TOKENS must be set (CSV) when MCP_HTTP_PORT is configured');
+    }
+
+    const transport = new StreamableHTTPServerTransport({
+      // Stateless: agents will reconnect cleanly on each heartbeat
+      sessionIdGenerator: undefined,
+    });
+    await this.server.connect(transport);
+
+    const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+      try {
+        // Liveness probe — no auth, fixed response
+        if (req.method === 'GET' && req.url === '/healthz') {
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ status: 'ok', inboxes: this.discoveredInboxes.length }));
+          return;
+        }
+
+        // Everything else must be on /mcp with valid bearer
+        if (!req.url || !req.url.startsWith('/mcp')) {
+          res.statusCode = 404;
+          res.end('not found');
+          return;
+        }
+
+        if (!authorizeRequest(req, res, acceptedTokens)) return;
+
+        // Buffer the body for POST so MCP SDK can parse it. The transport
+        // handles GET (SSE) and DELETE (session close) without a body.
+        if (req.method === 'POST') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) {
+            chunks.push(chunk as Buffer);
+          }
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          let parsed: unknown = undefined;
+          if (raw.length > 0) {
+            try {
+              parsed = JSON.parse(raw);
+            } catch {
+              res.statusCode = 400;
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify({ error: 'invalid_json', message: 'request body must be valid JSON' }));
+              return;
+            }
+          }
+          await transport.handleRequest(req, res, parsed);
+        } else {
+          await transport.handleRequest(req, res);
+        }
+      } catch (err) {
+        logger.error('HTTP request error', { error: err instanceof Error ? err.message : String(err) });
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ error: 'internal_error' }));
+        }
+      }
+    });
+
+    await new Promise<void>((resolve) => {
+      httpServer.listen(port, '127.0.0.1', () => resolve());
+    });
+
+    logger.info('Help Scout MCP Server started successfully (HTTP mode)', {
+      port,
+      endpoint: `http://127.0.0.1:${port}/mcp`,
+      acceptedTokenCount: acceptedTokens.size,
+    });
+    console.error(`Help Scout MCP Server listening on http://127.0.0.1:${port}/mcp`);
   }
 
   async stop(): Promise<void> {
