@@ -13,7 +13,11 @@ yarn-error.log*
 .mcp.json
 
 # Build output
-dist/
+# dist/ is INTENTIONALLY committed on this fork — see commit message of v1.8.2.
+# Reason: agents pull this fork via `npx -y github:mkeizer/help-scout-mcp-server#vX.Y.Z`,
+# and a cold-start prepare/tsc step caused MCP-server boot to lose a race with the
+# agent's first ToolSearch (only 4 of 14 tools registered in time). Pre-built dist/
+# eliminates that race. Re-add dist/ to .gitignore if you ever publish to npm proper.
 build/
 
 # Logs

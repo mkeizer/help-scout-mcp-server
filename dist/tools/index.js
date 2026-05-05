@@ -1,0 +1,2570 @@
+import { helpScoutClient } from '../utils/helpscout-client.js';
+import { createMcpToolError, isApiError } from '../utils/mcp-errors.js';
+import { HelpScoutAPIConstraints } from '../utils/api-constraints.js';
+import { logger } from '../utils/logger.js';
+import { config } from '../utils/config.js';
+import { PII_REDACTED_BODY } from '../utils/constants.js';
+import { SearchInboxesInputSchema, SearchConversationsInputSchema, GetThreadsInputSchema, GetAttachmentInputSchema, GetConversationSummaryInputSchema, AdvancedConversationSearchInputSchema, MultiStatusConversationSearchInputSchema, StructuredConversationFilterInputSchema, GetCustomerInputSchema, ListCustomersInputSchema, SearchCustomersByEmailInputSchema, GetCustomerContactsInputSchema, ListAllInboxesInputSchema, GetOrganizationInputSchema, ListOrganizationsInputSchema, GetOrganizationMembersInputSchema, GetOrganizationConversationsInputSchema, } from '../schema/types.js';
+/**
+ * Constants for tool operations
+ */
+const TOOL_CONSTANTS = {
+    // API pagination defaults
+    DEFAULT_PAGE_SIZE: 50,
+    MAX_PAGE_SIZE: 100,
+    MAX_THREAD_SIZE: 200,
+    DEFAULT_THREAD_SIZE: 200,
+    // Search limits
+    MAX_SEARCH_TERMS: 10,
+    DEFAULT_TIMEFRAME_DAYS: 60,
+    DEFAULT_LIMIT_PER_STATUS: 25,
+    // Sort configuration
+    DEFAULT_SORT_FIELD: 'createdAt',
+    DEFAULT_SORT_ORDER: 'desc',
+    // Cache and performance
+    MAX_CONVERSATION_ID_LENGTH: 20,
+    // Search locations
+    SEARCH_LOCATIONS: {
+        BODY: 'body',
+        SUBJECT: 'subject',
+        BOTH: 'both'
+    },
+    // Conversation statuses
+    STATUSES: {
+        ACTIVE: 'active',
+        PENDING: 'pending',
+        CLOSED: 'closed',
+        SPAM: 'spam'
+    }
+};
+import { CreateConversationInputSchema, CreateReplyInputSchema, CreateNoteInputSchema, UpdateConversationStatusInputSchema, UpdateConversationTagsInputSchema, GetOriginalSourceInputSchema, } from '../schema/types.js';
+import { reportToolHandler } from './reports.js';
+import { docsToolHandler } from './docs.js';
+const BINARY_MAGIC_HEX = new Set([
+    '25504446', // %PDF
+    '89504e47', // PNG
+    '47494638', // GIF ("GIF8")
+    '504b0304', // ZIP / docx / xlsx / pptx / odt
+    '504b0506', // ZIP empty archive
+    '504b0708', // ZIP spanned
+    '1f8b0800', // gzip
+    '52617221', // "Rar!"
+    '377abcaf', // 7z
+]);
+/**
+ * Decide whether an attachment buffer should be returned as text or base64.
+ * Magic-byte sniff for common binary formats (PDFs and images start with
+ * ASCII-looking headers but contain high-bit bytes downstream that UTF-8
+ * decode would mangle), then a printable-ASCII ratio over the first 2KB as
+ * fallback. .eml and plain-text logs are ASCII-heavy; binary formats are not.
+ */
+export function resolveAttachmentFormat(buf, requested) {
+    if (requested !== 'auto')
+        return requested;
+    const head4 = buf.slice(0, 4).toString('hex');
+    const head3 = buf.slice(0, 3).toString('hex');
+    if (BINARY_MAGIC_HEX.has(head4) || head3 === 'ffd8ff')
+        return 'base64';
+    const sample = buf.slice(0, 2048);
+    if (sample.includes(0))
+        return 'base64';
+    let printable = 0;
+    for (const b of sample) {
+        if (b === 0x09 || b === 0x0a || b === 0x0d || (b >= 0x20 && b <= 0x7e))
+            printable++;
+    }
+    const textRatio = sample.length > 0 ? printable / sample.length : 0;
+    return textRatio >= 0.9 ? 'text' : 'base64';
+}
+/**
+ * Universal "always-wrong" customer-mail format rules. Throws if any rule
+ * is violated. Spacing rule (≥4 <br><br>) is intentionally NOT enforced
+ * here — context-dependent (long outbound vs short ack reply); that stays
+ * a soft skill-level gate.
+ *
+ * Incident reference (KEU-208 / 2026-05-04): HoS wrote a flitsverkoop.nl
+ * customer mail directly via createConversation, bypassing Support Rep skill
+ * and its pre-send gate. The mail had em-dash + "Met vriendelijke groet"
+ * signature + multiple other format violations. To prevent recurrence,
+ * these rules now run server-side regardless of which agent calls the API.
+ */
+function enforceCustomerMailFormatRules(text, tool) {
+    const errors = [];
+    const body = text || '';
+    const bodyLower = body.toLowerCase();
+    // 1. No em-dash
+    if (body.includes('—')) {
+        errors.push("em-dash (—) present — use comma, period, or rephrase");
+    }
+    // 2. No forbidden signature/closing phrases (HS auto-appends signature)
+    const forbidden = ['met vriendelijke groet', 'mocht je verder vragen', 'het keurigonline team', 'keurigonline support'];
+    for (const phrase of forbidden) {
+        if (bodyLower.includes(phrase)) {
+            errors.push(`forbidden phrase: "${phrase}" — Help Scout appends the signature automatically`);
+        }
+    }
+    // 3. No <p> tags (we use <br><br>)
+    if (/<\/?p[\s>]/i.test(body)) {
+        errors.push("<p> tag present — replies use <br><br>, not <p>");
+    }
+    // 4. No markdown bold (use <strong>)
+    if (/\*\*[^*]+\*\*/.test(body)) {
+        errors.push("markdown **bold** present — use <strong>...</strong>");
+    }
+    // 5. No u-form (KO is je-vorm)
+    for (const u of [' u ', ' u,', ' u.', ' uw ']) {
+        if (bodyLower.includes(u)) {
+            errors.push(`u-form usage detected (${JSON.stringify(u.trim())}) — KO is je-vorm`);
+            break;
+        }
+    }
+    // 6. No 'Softaculous' — KO uses Installatron. Softaculous in a KO customer
+    //    mail is almost always a hallucination ("ga naar Softaculous" while we
+    //    actually have Installatron). Other product names (cPanel, Plesk,
+    //    JetBackup, WHM) are legitimately mentionable in migration / prior-host
+    //    context, so they're NOT in this hard block — those stay a skill-level
+    //    soft check via memory/feedback_forbidden_products_and_labels.md.
+    if (/\bsoftaculous\b/i.test(body)) {
+        errors.push("forbidden product name 'softaculous' — KO uses Installatron. If you're describing a customer's prior host, rephrase to make that explicit.");
+    }
+    // 7. No English labels in NL copy
+    const labelPairs = [
+        [/\bPackage\b/, 'Package', 'Pakket'],
+        [/\bAccount Settings\b/, 'Account Settings', 'Accountinstellingen'],
+        [/\bBackup\b/, 'Backup', 'Back-up'],
+        [/\bStorage\b/, 'Storage', 'Schijfruimte'],
+        [/\bRenewal\b/, 'Renewal', 'Verlenging'],
+        [/\bSubscription\b/, 'Subscription', 'Abonnement'],
+    ];
+    for (const [pat, en, nl] of labelPairs) {
+        if (pat.test(body)) {
+            errors.push(`English label '${en}' in NL copy — use '${nl}'`);
+        }
+    }
+    // 8. No <h1>-<h6> tags (skills use <strong> for emphasis, never headings — they break HS's email rendering)
+    if (/<h[1-6][\s>]/i.test(body)) {
+        errors.push("<h1>-<h6> heading tag present — use <strong>...</strong> for emphasis, headings break HS rendering");
+    }
+    if (errors.length > 0) {
+        throw new Error(`${tool}: BLOCKED by server format policy. Fix these before retrying:\n` +
+            errors.map(e => `  - ${e}`).join('\n') +
+            `\n(See memory/feedback_forbidden_products_and_labels.md and skill pre-send gate. ` +
+            `If using a Support Rep outbound/reply skill, the Step 4 gate should have caught this — ` +
+            `you may have skipped that step or are calling from outside the skill.)`);
+    }
+}
+export class ToolHandler {
+    constructor() {
+        this.callHistory = [];
+        // Direct imports, no DI needed
+    }
+    /**
+     * Escape special characters in Help Scout query syntax to prevent injection
+     * Help Scout uses double quotes for exact phrases, so we need to escape them
+     */
+    escapeQueryTerm(term) {
+        // Escape backslashes first, then double quotes
+        return term.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+    /**
+     * Append a createdAt date range to an existing Help Scout query string.
+     * Help Scout has no native createdAfter/createdBefore URL params, so we
+     * use query syntax: (createdAt:[start TO end]).
+     */
+    appendCreatedAtFilter(existingQuery, createdAfter, createdBefore) {
+        if (!createdAfter && !createdBefore)
+            return existingQuery;
+        // Validate date format to prevent query injection and match Help Scout expectations
+        const isoDatePattern = /^\d{4}-\d{2}-\d{2}(T[\d:.]+([+-]\d{2}:\d{2}|Z)?)?$/;
+        if (createdAfter && !isoDatePattern.test(createdAfter)) {
+            throw new Error(`Invalid createdAfter date format: ${createdAfter}. Expected ISO 8601 (e.g., 2024-01-15T00:00:00Z)`);
+        }
+        if (createdBefore && !isoDatePattern.test(createdBefore)) {
+            throw new Error(`Invalid createdBefore date format: ${createdBefore}. Expected ISO 8601 (e.g., 2024-01-15T00:00:00Z)`);
+        }
+        // Strip milliseconds (Help Scout rejects .xxx format)
+        const normalize = (d) => d.replace(/\.\d{3}(Z|[+-]\d{2}:\d{2})$/, '$1');
+        const start = createdAfter ? normalize(createdAfter) : '*';
+        const end = createdBefore ? normalize(createdBefore) : '*';
+        const clause = `(createdAt:[${start} TO ${end}])`;
+        if (!existingQuery)
+            return clause;
+        return `(${existingQuery}) AND ${clause}`;
+    }
+    /**
+     * Set the current user query for context-aware validation
+     */
+    setUserContext(userQuery) {
+        this.currentUserQuery = userQuery;
+    }
+    async listTools() {
+        return [
+            {
+                name: 'searchInboxes',
+                description: 'List or search inboxes by name. Deprecated: inbox IDs now in server instructions. Only needed to refresh list mid-session.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'Search query to match inbox names. Use empty string "" to list ALL inboxes. This is case-insensitive substring matching.',
+                        },
+                        limit: {
+                            type: 'number',
+                            description: `Maximum number of results (1-${TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
+                            minimum: 1,
+                            maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
+                            default: TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
+                        },
+                        cursor: {
+                            type: 'string',
+                            description: 'Pagination cursor for next page',
+                        },
+                    },
+                    required: ['query'],
+                },
+            },
+            {
+                name: 'searchConversations',
+                description: 'List conversations by status, date range, inbox, or tags. Searches all statuses by default. For keyword content search, use comprehensiveConversationSearch.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'HelpScout query syntax. Omit to list all. Example: (body:"keyword")',
+                        },
+                        inboxId: {
+                            type: 'string',
+                            description: 'Inbox ID from server instructions',
+                        },
+                        tag: {
+                            type: 'string',
+                            description: 'Filter by tag name',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: [TOOL_CONSTANTS.STATUSES.ACTIVE, TOOL_CONSTANTS.STATUSES.PENDING, TOOL_CONSTANTS.STATUSES.CLOSED, TOOL_CONSTANTS.STATUSES.SPAM],
+                            description: 'Filter by status. Defaults to all (active, pending, closed)',
+                        },
+                        createdAfter: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'Filter conversations created after this timestamp (ISO8601)',
+                        },
+                        createdBefore: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'Filter conversations created before this timestamp (ISO8601)',
+                        },
+                        limit: {
+                            type: 'number',
+                            description: `Maximum number of results (1-${TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
+                            minimum: 1,
+                            maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
+                            default: TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
+                        },
+                        cursor: {
+                            type: 'string',
+                            description: 'Pagination cursor for next page',
+                        },
+                        sort: {
+                            type: 'string',
+                            enum: ['createdAt', 'modifiedAt', 'number'],
+                            default: TOOL_CONSTANTS.DEFAULT_SORT_FIELD,
+                            description: 'Sort field',
+                        },
+                        order: {
+                            type: 'string',
+                            enum: ['asc', 'desc'],
+                            default: TOOL_CONSTANTS.DEFAULT_SORT_ORDER,
+                            description: 'Sort order',
+                        },
+                        fields: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Specific fields to return (for partial responses)',
+                        },
+                    },
+                },
+            },
+            {
+                name: 'getConversationSummary',
+                description: 'Get conversation summary with first customer message and latest staff reply',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to get summary for',
+                        },
+                    },
+                    required: ['conversationId'],
+                },
+            },
+            {
+                name: 'getThreads',
+                description: 'Retrieve full message history for a conversation. Returns all thread messages.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to get threads for',
+                        },
+                        limit: {
+                            type: 'number',
+                            description: `Maximum number of threads (1-${TOOL_CONSTANTS.MAX_THREAD_SIZE})`,
+                            minimum: 1,
+                            maximum: TOOL_CONSTANTS.MAX_THREAD_SIZE,
+                            default: TOOL_CONSTANTS.DEFAULT_THREAD_SIZE,
+                        },
+                        cursor: {
+                            type: 'string',
+                            description: 'Pagination cursor for next page',
+                        },
+                    },
+                    required: ['conversationId'],
+                },
+            },
+            {
+                name: 'getAttachment',
+                description: 'Download an attachment from a conversation. Returns decoded content for text/eml/json, base64 for binary. **For images (PNG/JPEG/GIF/WebP up to 5 MB) the response also includes an MCP image content block, so you can SEE the image directly — use this to read screenshots customers attach.** Attachment IDs are listed in each thread\'s `_embedded.attachments[]` in getThreads output. Use this for .eml forwards, screenshots, logs — anything the customer attached.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID (numeric, as string)',
+                        },
+                        attachmentId: {
+                            type: ['string', 'number'],
+                            description: 'The attachment ID (from getThreads → thread._embedded.attachments[].id)',
+                        },
+                        format: {
+                            type: 'string',
+                            enum: ['auto', 'text', 'base64'],
+                            description: "'auto' (default) = text for text/* + message/rfc822, base64 for binaries. 'text' = force UTF-8 decode. 'base64' = raw base64.",
+                            default: 'auto',
+                        },
+                        maxBytes: {
+                            type: 'number',
+                            description: 'Cap on returned payload size (default 1MB, max 5MB)',
+                            minimum: 1,
+                            maximum: 5000000,
+                            default: 1000000,
+                        },
+                    },
+                    required: ['conversationId', 'attachmentId'],
+                },
+            },
+            {
+                name: 'getOriginalSource',
+                description: 'Get the original email source (RFC 822) of a thread message, including full SMTP headers (Received, DKIM-Signature, SPF, DMARC, etc). Useful for diagnosing email delivery issues.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID',
+                        },
+                        threadId: {
+                            type: 'string',
+                            description: 'The thread ID to get original source for (get thread IDs from getThreads)',
+                        },
+                    },
+                    required: ['conversationId', 'threadId'],
+                },
+            },
+            {
+                name: 'getServerTime',
+                description: 'Get current server timestamp. Use before date-relative searches to calculate time ranges.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {},
+                },
+            },
+            {
+                name: 'listAllInboxes',
+                description: 'List all inboxes with IDs. Deprecated: inbox IDs now in server instructions. Only needed mid-session.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        limit: {
+                            type: 'number',
+                            description: 'Maximum number of results (1-100)',
+                            minimum: 1,
+                            maximum: 100,
+                            default: 100,
+                        },
+                    },
+                },
+            },
+            {
+                name: 'advancedConversationSearch',
+                description: 'Filter conversations by email domain, customer email, or multiple tags. Supports boolean logic for complex queries. For simple keyword search, use comprehensiveConversationSearch.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        contentTerms: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Search terms to find in conversation body/content (will be OR combined)',
+                        },
+                        subjectTerms: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Search terms to find in conversation subject (will be OR combined)',
+                        },
+                        customerEmail: {
+                            type: 'string',
+                            description: 'Exact customer email to search for',
+                        },
+                        emailDomain: {
+                            type: 'string',
+                            description: 'Email domain to search for (e.g., "company.com" to find all @company.com emails)',
+                        },
+                        tags: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Tag names to search for (will be OR combined)',
+                        },
+                        inboxId: {
+                            type: 'string',
+                            description: 'Filter by inbox ID',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: [TOOL_CONSTANTS.STATUSES.ACTIVE, TOOL_CONSTANTS.STATUSES.PENDING, TOOL_CONSTANTS.STATUSES.CLOSED, TOOL_CONSTANTS.STATUSES.SPAM],
+                            description: 'Filter by conversation status',
+                        },
+                        createdAfter: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'Filter conversations created after this timestamp (ISO8601)',
+                        },
+                        createdBefore: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'Filter conversations created before this timestamp (ISO8601)',
+                        },
+                        limit: {
+                            type: 'number',
+                            description: `Maximum number of results (1-${TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
+                            minimum: 1,
+                            maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
+                            default: TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
+                        },
+                    },
+                },
+            },
+            {
+                name: 'comprehensiveConversationSearch',
+                description: 'Search conversation content by keywords. Searches subject and body across all statuses. Requires searchTerms parameter. For listing without keywords, use searchConversations.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        searchTerms: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Keywords to search for (OR logic). Example: ["billing", "refund"]',
+                            minItems: 1,
+                        },
+                        inboxId: {
+                            type: 'string',
+                            description: 'Inbox ID from server instructions',
+                        },
+                        statuses: {
+                            type: 'array',
+                            items: { enum: ['active', 'pending', 'closed', 'spam'] },
+                            description: 'Conversation statuses to search (defaults to active, pending, closed)',
+                            default: ['active', 'pending', 'closed'],
+                        },
+                        searchIn: {
+                            type: 'array',
+                            items: { enum: ['body', 'subject', 'both'] },
+                            description: 'Where to search for terms (defaults to both body and subject)',
+                            default: ['both'],
+                        },
+                        timeframeDays: {
+                            type: 'number',
+                            description: `Number of days back to search (defaults to ${TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS})`,
+                            minimum: 1,
+                            maximum: 365,
+                            default: TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS,
+                        },
+                        createdAfter: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'Override timeframeDays with specific start date (ISO8601)',
+                        },
+                        createdBefore: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'End date for search range (ISO8601)',
+                        },
+                        limitPerStatus: {
+                            type: 'number',
+                            description: `Maximum results per status (defaults to ${TOOL_CONSTANTS.DEFAULT_LIMIT_PER_STATUS})`,
+                            minimum: 1,
+                            maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
+                            default: TOOL_CONSTANTS.DEFAULT_LIMIT_PER_STATUS,
+                        },
+                    },
+                    required: ['searchTerms'],
+                },
+            },
+            {
+                name: 'structuredConversationFilter',
+                description: 'Lookup conversation by ticket number or filter by assignee/customer/folder IDs. Use after discovering IDs from other searches. For initial searches, use searchConversations or comprehensiveConversationSearch.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        assignedTo: { type: 'number', description: 'User ID from previous_results[].assignee.id. Use -1 for unassigned.' },
+                        folderId: { type: 'number', description: 'Folder ID from Help Scout UI (not in API responses)' },
+                        customerIds: { type: 'array', items: { type: 'number' }, description: 'Customer IDs from previous_results[].customer.id' },
+                        conversationNumber: { type: 'number', description: 'Ticket number from previous_results[].number or user reference' },
+                        status: { type: 'string', enum: ['active', 'pending', 'closed', 'spam', 'all'], default: 'all' },
+                        inboxId: { type: 'string', description: 'Inbox ID to combine with filters' },
+                        tag: { type: 'string', description: 'Tag name to combine with filters' },
+                        createdAfter: { type: 'string', format: 'date-time' },
+                        createdBefore: { type: 'string', format: 'date-time' },
+                        modifiedSince: { type: 'string', format: 'date-time', description: 'Filter by last modified (different from created)' },
+                        sortBy: { type: 'string', enum: ['createdAt', 'modifiedAt', 'number', 'waitingSince', 'customerName', 'customerEmail', 'mailboxId', 'status', 'subject'], default: 'createdAt', description: 'waitingSince/customerName/customerEmail are unique to this tool' },
+                        sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+                        limit: { type: 'number', minimum: 1, maximum: 100, default: 50 },
+                        cursor: { type: 'string' },
+                    },
+                },
+            },
+            // --- Write Tools (fork additions) ---
+            {
+                name: 'createConversation',
+                description: 'Create a new conversation (email) to a customer. Creates a draft by default. Use this to send proactive emails, not replies to existing tickets.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        subject: { type: 'string', description: 'Email subject line' },
+                        customer: { type: 'string', description: 'Customer email address' },
+                        mailboxId: { type: 'number', description: 'Inbox ID (e.g. 111589 for KeurigOnline)' },
+                        text: { type: 'string', description: 'Message body (HTML supported)' },
+                        status: { type: 'string', enum: ['active', 'closed', 'pending'], description: 'Conversation status (default: active)', default: 'active' },
+                        draft: { type: 'boolean', description: 'Create first message as draft (true, default) or send immediately (false)', default: true },
+                        tags: { type: 'array', items: { type: 'string' }, description: 'Tags to apply' },
+                        assignTo: { type: 'number', description: 'User ID to assign conversation to' },
+                        cc: { type: 'array', items: { type: 'string' }, description: 'CC email addresses' },
+                        bcc: { type: 'array', items: { type: 'string' }, description: 'BCC email addresses' },
+                    },
+                    required: ['subject', 'customer', 'mailboxId', 'text'],
+                },
+            },
+            {
+                name: 'createReply',
+                description: 'Reply to a conversation. Defaults to draft mode so the reply can be reviewed before sending.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: { type: 'string', description: 'The conversation ID to reply to' },
+                        text: { type: 'string', description: 'Reply body (HTML supported)' },
+                        customer: { type: 'string', description: 'Customer email address the reply is sent to' },
+                        draft: { type: 'boolean', description: 'Create as draft (true, default) or send immediately (false)', default: true },
+                        status: { type: 'string', enum: ['active', 'closed', 'pending'], description: 'Set conversation status when reply is sent. For drafts, status is applied when the draft is sent from the UI.' },
+                        cc: { type: 'array', items: { type: 'string' }, description: 'CC email addresses' },
+                        bcc: { type: 'array', items: { type: 'string' }, description: 'BCC email addresses' },
+                    },
+                    required: ['conversationId', 'text', 'customer'],
+                },
+            },
+            {
+                name: 'createNote',
+                description: 'Add an internal note to a conversation. Notes are only visible to staff, not customers.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: { type: 'string', description: 'The conversation ID to add a note to' },
+                        text: { type: 'string', description: 'Note body (HTML supported)' },
+                    },
+                    required: ['conversationId', 'text'],
+                },
+            },
+            {
+                name: 'updateConversationStatus',
+                description: 'Change the status of a conversation (active, pending, or closed).',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: { type: 'string', description: 'The conversation ID to update' },
+                        status: { type: 'string', enum: ['active', 'pending', 'closed'], description: 'New status for the conversation' },
+                    },
+                    required: ['conversationId', 'status'],
+                },
+            },
+            {
+                name: 'updateConversationTags',
+                description: 'Update tags on a conversation. Replaces all existing tags with the provided list. Send empty array to remove all tags. Non-existing tags will be created automatically.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: { type: 'string', description: 'The conversation ID to update' },
+                        tags: { type: 'array', items: { type: 'string' }, description: 'List of tags to apply. Non-existing tags will be created. Send empty array to remove all tags.' },
+                    },
+                    required: ['conversationId', 'tags'],
+                },
+            },
+            // --- Customer tools (upstream NAS-680, NAS-727, NAS-728) ---
+            {
+                name: 'getCustomer',
+                description: 'Get a customer profile by ID. Returns profile with contact details (emails, phones, chat handles, social profiles, websites) plus address from a separate lookup.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        customerId: {
+                            type: 'string',
+                            description: 'Customer ID',
+                        },
+                    },
+                    required: ['customerId'],
+                },
+            },
+            {
+                name: 'listCustomers',
+                description: 'List or search customers by name, query syntax, or modification date. Page-based pagination (v2 API).',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        firstName: { type: 'string', description: 'Filter by first name' },
+                        lastName: { type: 'string', description: 'Filter by last name' },
+                        query: { type: 'string', description: 'Advanced query syntax, e.g. (email:"john@example.com")' },
+                        mailbox: { type: 'number', description: 'Filter by inbox ID' },
+                        modifiedSince: { type: 'string', description: 'ISO 8601 date - only customers modified after this date' },
+                        sortField: { type: 'string', enum: ['createdAt', 'firstName', 'lastName', 'modifiedAt'], default: 'createdAt' },
+                        sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+                        page: { type: 'number', minimum: 1, default: 1, description: 'Page number (API returns 50 results per page)' },
+                    },
+                },
+            },
+            {
+                name: 'searchCustomersByEmail',
+                description: 'Search customers by email address using the v3 API. Provides email as a dedicated filter parameter (vs query syntax in v2) and cursor-based pagination.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        email: { type: 'string', description: 'Email address to search for' },
+                        firstName: { type: 'string', description: 'Filter by first name' },
+                        lastName: { type: 'string', description: 'Filter by last name' },
+                        query: { type: 'string', description: 'Advanced query syntax' },
+                        modifiedSince: { type: 'string', description: 'ISO 8601 date' },
+                        createdSince: { type: 'string', description: 'ISO 8601 date - only in v3' },
+                        cursor: { type: 'string', description: 'Cursor for pagination (from nextCursor in previous response)' },
+                    },
+                    required: ['email'],
+                },
+            },
+            // NAS-727: Customer sub-resource tools
+            {
+                name: 'getCustomerContacts',
+                description: 'Get all contact details for a customer: emails, phones, chat handles, social profiles, websites, and address. Calls dedicated sub-resource endpoints for complete data. Use after getCustomer or listCustomers.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        customerId: {
+                            type: 'string',
+                            description: 'Customer ID',
+                        },
+                    },
+                    required: ['customerId'],
+                },
+            },
+            // --- Organization tools (upstream NAS-684, NAS-712) ---
+            {
+                name: 'getOrganization',
+                description: 'Get an organization by ID with optional customer/conversation counts.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        organizationId: { type: 'string', description: 'Organization ID' },
+                        includeCounts: { type: 'boolean', default: true, description: 'Include customerCount and conversationCount' },
+                        includeProperties: { type: 'boolean', default: false, description: 'Include organization property values' },
+                    },
+                    required: ['organizationId'],
+                },
+            },
+            {
+                name: 'listOrganizations',
+                description: 'List all organizations with sorting options. Use for discovering organizations before drilling into members or conversations. Returns 50 per page.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        sortField: { type: 'string', enum: ['name', 'customerCount', 'conversationCount', 'lastInteractionAt'], default: 'lastInteractionAt' },
+                        sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+                        page: { type: 'number', minimum: 1, default: 1, description: 'Page number (50 results per page)' },
+                    },
+                },
+            },
+            {
+                name: 'getOrganizationMembers',
+                description: 'Get all customers belonging to an organization. Use after getOrganization to see who is in the org. Returns 50 per page.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        organizationId: { type: 'string', description: 'Organization ID' },
+                        page: { type: 'number', minimum: 1, default: 1, description: 'Page number (50 results per page)' },
+                    },
+                    required: ['organizationId'],
+                },
+            },
+            {
+                name: 'getOrganizationConversations',
+                description: 'Get all conversations associated with an organization. Traverses org-to-conversations without needing individual customer lookups. Returns 50 per page.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        organizationId: { type: 'string', description: 'Organization ID' },
+                        page: { type: 'number', minimum: 1, default: 1, description: 'Page number (50 results per page)' },
+                    },
+                    required: ['organizationId'],
+                },
+            },
+            // --- Report Tools ---
+            {
+                name: 'getCompanyReport',
+                description: 'Overall company metrics (customers helped, closed conversations, replies sent, per-user stats). Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time', description: 'Previous period start for comparison' },
+                        previousEnd: { type: 'string', format: 'date-time', description: 'Previous period end for comparison' },
+                        mailboxes: { type: 'string', description: 'Comma-separated mailbox IDs' },
+                        tags: { type: 'string', description: 'Comma-separated tag IDs' },
+                        types: { type: 'string', description: 'Comma-separated conversation types (email, phone, chat)' },
+                        folders: { type: 'string', description: 'Comma-separated folder IDs' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getCompanyCustomersHelped',
+                description: 'Customers helped over time, grouped by day/week/month. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                        viewBy: { type: 'string', enum: ['day', 'week', 'month'], description: 'Time grouping for the data' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getCompanyDrilldown',
+                description: 'Drill into company conversations by metric range. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                        page: { type: 'number', minimum: 1, description: 'Page number' },
+                        rows: { type: 'number', minimum: 1, maximum: 100, description: 'Results per page' },
+                        range: { type: 'string', description: 'Metric range to drill into' },
+                        rangeId: { type: 'number', description: 'Range ID for specific metric' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getConversationsReport',
+                description: 'Conversation volume, busiest day/time, top tags, and top customers. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getProductivityReport',
+                description: 'Resolution time, first response time, replies to resolve, and handle time. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                        officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getEmailReport',
+                description: 'Email volume, resolution time, and response times. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        folders: { type: 'string' },
+                        officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getFirstResponseTimeReport',
+                description: 'First response time over time, grouped by day/week/month. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                        officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+                        viewBy: { type: 'string', enum: ['day', 'week', 'month'], description: 'Time grouping' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getResolutionTimeReport',
+                description: 'Resolution time over time, grouped by day/week/month. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                        officeHours: { type: 'boolean', description: 'Calculate using office hours only' },
+                        viewBy: { type: 'string', enum: ['day', 'week', 'month'], description: 'Time grouping' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getHappinessReport',
+                description: 'Customer satisfaction scores (great/ok/not-good percentages). Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            {
+                name: 'getHappinessRatings',
+                description: 'Individual satisfaction ratings with comments, filterable by rating type. Requires start and end dates.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        start: { type: 'string', format: 'date-time', description: 'Start date (ISO8601)' },
+                        end: { type: 'string', format: 'date-time', description: 'End date (ISO8601)' },
+                        previousStart: { type: 'string', format: 'date-time' },
+                        previousEnd: { type: 'string', format: 'date-time' },
+                        mailboxes: { type: 'string' },
+                        tags: { type: 'string' },
+                        types: { type: 'string' },
+                        folders: { type: 'string' },
+                        page: { type: 'number', minimum: 1, description: 'Page number' },
+                        sortField: { type: 'string', enum: ['rating', 'date'], description: 'Sort field' },
+                        sortOrder: { type: 'string', enum: ['asc', 'desc'], description: 'Sort order' },
+                        rating: { type: 'string', enum: ['great', 'ok', 'not-good'], description: 'Filter by rating type' },
+                    },
+                    required: ['start', 'end'],
+                },
+            },
+            // Docs API tools (only included if HELPSCOUT_DOCS_API_KEY is configured)
+            ...docsToolHandler.listTools(),
+        ];
+    }
+    async callTool(request) {
+        const requestId = Math.random().toString(36).substring(7);
+        const startTime = Date.now();
+        logger.info('Tool call started', {
+            requestId,
+            toolName: request.params.name,
+            arguments: request.params.arguments,
+        });
+        // REVERSE LOGIC VALIDATION: Check API constraints before making the call
+        const validationContext = {
+            toolName: request.params.name,
+            arguments: request.params.arguments || {},
+            userQuery: this.currentUserQuery,
+            previousCalls: [...this.callHistory]
+        };
+        const validation = HelpScoutAPIConstraints.validateToolCall(validationContext);
+        if (!validation.isValid) {
+            const errorDetails = {
+                errors: validation.errors,
+                suggestions: validation.suggestions,
+                requiredPrerequisites: validation.requiredPrerequisites
+            };
+            logger.warn('Tool call validation failed', {
+                requestId,
+                toolName: request.params.name,
+                validation: errorDetails
+            });
+            // Return helpful error with API constraint guidance (NAS-472: isError per MCP spec)
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'API Constraint Validation Failed',
+                            details: errorDetails,
+                            helpScoutAPIRequirements: {
+                                message: 'This call violates Help Scout API constraints',
+                                requiredActions: validation.requiredPrerequisites || [],
+                                suggestions: validation.suggestions
+                            }
+                        }, null, 2)
+                    }],
+                isError: true,
+            };
+        }
+        try {
+            let result;
+            switch (request.params.name) {
+                case 'searchInboxes':
+                    result = await this.searchInboxes(request.params.arguments || {});
+                    break;
+                case 'searchConversations':
+                    result = await this.searchConversations(request.params.arguments || {});
+                    break;
+                case 'getConversationSummary':
+                    result = await this.getConversationSummary(request.params.arguments || {});
+                    break;
+                case 'getThreads':
+                    result = await this.getThreads(request.params.arguments || {});
+                    break;
+                case 'getAttachment':
+                    result = await this.getAttachment(request.params.arguments || {});
+                    break;
+                case 'getOriginalSource':
+                    result = await this.getOriginalSource(request.params.arguments || {});
+                    break;
+                case 'getServerTime':
+                    result = await this.getServerTime();
+                    break;
+                case 'listAllInboxes':
+                    result = await this.listAllInboxes(request.params.arguments || {});
+                    break;
+                case 'advancedConversationSearch':
+                    result = await this.advancedConversationSearch(request.params.arguments || {});
+                    break;
+                case 'comprehensiveConversationSearch':
+                    result = await this.comprehensiveConversationSearch(request.params.arguments || {});
+                    break;
+                case 'structuredConversationFilter':
+                    result = await this.structuredConversationFilter(request.params.arguments || {});
+                    break;
+                case 'createConversation':
+                    result = await this.createConversation(request.params.arguments || {});
+                    break;
+                case 'createReply':
+                    result = await this.createReply(request.params.arguments || {});
+                    break;
+                case 'createNote':
+                    result = await this.createNote(request.params.arguments || {});
+                    break;
+                case 'updateConversationStatus':
+                    result = await this.updateConversationStatus(request.params.arguments || {});
+                    break;
+                case 'updateConversationTags':
+                    result = await this.updateConversationTags(request.params.arguments || {});
+                    break;
+                // Customer tools
+                case 'getCustomer':
+                    result = await this.getCustomer(request.params.arguments || {});
+                    break;
+                case 'listCustomers':
+                    result = await this.listCustomers(request.params.arguments || {});
+                    break;
+                case 'searchCustomersByEmail':
+                    result = await this.searchCustomersByEmail(request.params.arguments || {});
+                    break;
+                case 'getCustomerContacts':
+                    result = await this.getCustomerContacts(request.params.arguments || {});
+                    break;
+                // Organization tools
+                case 'getOrganization':
+                    result = await this.getOrganization(request.params.arguments || {});
+                    break;
+                case 'listOrganizations':
+                    result = await this.listOrganizations(request.params.arguments || {});
+                    break;
+                case 'getOrganizationMembers':
+                    result = await this.getOrganizationMembers(request.params.arguments || {});
+                    break;
+                case 'getOrganizationConversations':
+                    result = await this.getOrganizationConversations(request.params.arguments || {});
+                    break;
+                // Report tools
+                case 'getCompanyReport':
+                    result = await reportToolHandler.getCompanyReport(request.params.arguments || {});
+                    break;
+                case 'getCompanyCustomersHelped':
+                    result = await reportToolHandler.getCompanyCustomersHelped(request.params.arguments || {});
+                    break;
+                case 'getCompanyDrilldown':
+                    result = await reportToolHandler.getCompanyDrilldown(request.params.arguments || {});
+                    break;
+                case 'getConversationsReport':
+                    result = await reportToolHandler.getConversationsReport(request.params.arguments || {});
+                    break;
+                case 'getProductivityReport':
+                    result = await reportToolHandler.getProductivityReport(request.params.arguments || {});
+                    break;
+                case 'getEmailReport':
+                    result = await reportToolHandler.getEmailReport(request.params.arguments || {});
+                    break;
+                case 'getFirstResponseTimeReport':
+                    result = await reportToolHandler.getFirstResponseTimeReport(request.params.arguments || {});
+                    break;
+                case 'getResolutionTimeReport':
+                    result = await reportToolHandler.getResolutionTimeReport(request.params.arguments || {});
+                    break;
+                case 'getHappinessReport':
+                    result = await reportToolHandler.getHappinessReport(request.params.arguments || {});
+                    break;
+                case 'getHappinessRatings':
+                    result = await reportToolHandler.getHappinessRatings(request.params.arguments || {});
+                    break;
+                // Docs API tools
+                case 'listDocsCategories':
+                    result = await docsToolHandler.listDocsCategories(request.params.arguments || {});
+                    break;
+                case 'listDocsArticles':
+                    result = await docsToolHandler.listDocsArticles(request.params.arguments || {});
+                    break;
+                case 'searchDocsArticles':
+                    result = await docsToolHandler.searchDocsArticles(request.params.arguments || {});
+                    break;
+                case 'getDocsArticle':
+                    result = await docsToolHandler.getDocsArticle(request.params.arguments || {});
+                    break;
+                case 'createDocsArticle':
+                    result = await docsToolHandler.createDocsArticle(request.params.arguments || {});
+                    break;
+                case 'updateDocsArticle':
+                    result = await docsToolHandler.updateDocsArticle(request.params.arguments || {});
+                    break;
+                case 'deleteDocsArticle':
+                    result = await docsToolHandler.deleteDocsArticle(request.params.arguments || {});
+                    break;
+                default:
+                    throw new Error(`Unknown tool: ${request.params.name}`);
+            }
+            const duration = Date.now() - startTime;
+            // Add to call history for future validation
+            this.callHistory.push(request.params.name);
+            // Enhance result with API constraint guidance (best-effort: never turn a success into a failure)
+            let guidanceProvided = false;
+            try {
+                const originalContent = JSON.parse(result.content[0].text);
+                const guidance = HelpScoutAPIConstraints.generateToolGuidance(request.params.name, originalContent, validationContext);
+                if (guidance.length > 0) {
+                    originalContent.apiGuidance = guidance;
+                    result.content[0] = {
+                        type: 'text',
+                        text: JSON.stringify(originalContent, null, 2)
+                    };
+                    guidanceProvided = true;
+                }
+            }
+            catch (guidanceError) {
+                logger.warn('Failed to inject API guidance into tool response', {
+                    requestId,
+                    toolName: request.params.name,
+                    error: guidanceError instanceof Error ? guidanceError.message : String(guidanceError),
+                });
+            }
+            logger.info('Tool call completed', {
+                requestId,
+                toolName: request.params.name,
+                duration,
+                validationPassed: true,
+                guidanceProvided
+            });
+            return result;
+        }
+        catch (error) {
+            const duration = Date.now() - startTime;
+            return createMcpToolError(error, {
+                toolName: request.params.name,
+                requestId,
+                duration,
+            });
+        }
+    }
+    async searchInboxes(args) {
+        const input = SearchInboxesInputSchema.parse(args);
+        const response = await helpScoutClient.get('/mailboxes', {
+            page: 1,
+            size: input.limit,
+        });
+        const inboxes = response._embedded?.mailboxes || [];
+        const filteredInboxes = inboxes.filter(inbox => inbox.name.toLowerCase().includes(input.query.toLowerCase()));
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: filteredInboxes.map(inbox => ({
+                            id: inbox.id,
+                            name: inbox.name,
+                            email: inbox.email,
+                            createdAt: inbox.createdAt,
+                            updatedAt: inbox.updatedAt,
+                        })),
+                        query: input.query,
+                        totalFound: filteredInboxes.length,
+                        totalAvailable: inboxes.length,
+                        usage: filteredInboxes.length > 0 ?
+                            'NEXT STEP: Use the "id" field from these results in your conversation search tools (comprehensiveConversationSearch or searchConversations)' :
+                            'No inboxes matched your query. Try a different search term or use empty string "" to list all inboxes.',
+                        example: filteredInboxes.length > 0 ?
+                            `comprehensiveConversationSearch({ searchTerms: ["your search"], inboxId: "${filteredInboxes[0].id}" })` :
+                            null,
+                    }, null, 2),
+                },
+            ],
+        };
+    }
+    async searchConversations(args) {
+        const input = SearchConversationsInputSchema.parse(args);
+        const baseParams = {
+            page: 1,
+            size: input.limit,
+            sortField: input.sort,
+            sortOrder: input.order,
+        };
+        // Add HelpScout query parameter for content/body search
+        if (input.query) {
+            baseParams.query = input.query;
+        }
+        // Apply inbox scoping: explicit inboxId > default > all inboxes
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        if (effectiveInboxId) {
+            baseParams.mailbox = effectiveInboxId;
+        }
+        if (input.tag)
+            baseParams.tag = input.tag;
+        const queryWithDate = this.appendCreatedAtFilter(baseParams.query, input.createdAfter);
+        if (queryWithDate)
+            baseParams.query = queryWithDate;
+        let conversations = [];
+        let searchedStatuses;
+        let pagination = null;
+        if (input.status) {
+            // Explicit status: single API call
+            const response = await helpScoutClient.get('/conversations', {
+                ...baseParams,
+                status: input.status,
+            });
+            conversations = response._embedded?.conversations || [];
+            searchedStatuses = [input.status];
+            pagination = response.page;
+        }
+        else {
+            // No status specified: search all statuses in parallel
+            const statuses = ['active', 'pending', 'closed'];
+            searchedStatuses = [...statuses];
+            const results = await Promise.allSettled(statuses.map(status => helpScoutClient.get('/conversations', {
+                ...baseParams,
+                status,
+            })));
+            // Merge and dedupe by conversation ID, handling partial failures
+            // Track both returned conversations AND total available from API
+            const seenIds = new Set();
+            const failedStatuses = [];
+            let totalAvailable = 0;
+            const totalByStatus = {};
+            for (const [index, result] of results.entries()) {
+                if (result.status === 'fulfilled') {
+                    const statusName = statuses[index];
+                    const statusTotal = result.value.page?.totalElements || 0;
+                    totalByStatus[statusName] = statusTotal;
+                    totalAvailable += statusTotal;
+                    const responseConversations = result.value._embedded?.conversations || [];
+                    for (const conv of responseConversations) {
+                        if (!seenIds.has(conv.id)) {
+                            seenIds.add(conv.id);
+                            conversations.push(conv);
+                        }
+                    }
+                }
+                else {
+                    const failedStatus = statuses[index];
+                    const reason = result.reason;
+                    const errorMessage = isApiError(reason)
+                        ? reason.message
+                        : (reason instanceof Error ? reason.message : String(reason));
+                    const errorCode = isApiError(reason) ? reason.code : 'UNKNOWN';
+                    // Non-API errors (TypeError, ReferenceError, etc.) should not be
+                    // silently swallowed - rethrow so programming bugs surface.
+                    if (!isApiError(reason)) {
+                        throw reason;
+                    }
+                    // Critical API errors should abort, not return partial results.
+                    if (errorCode === 'UNAUTHORIZED' || errorCode === 'INVALID_INPUT') {
+                        throw reason;
+                    }
+                    failedStatuses.push({
+                        status: failedStatus,
+                        message: errorMessage,
+                        code: errorCode,
+                    });
+                    // Log as ERROR since this affects data completeness
+                    logger.error('Status search failed - partial results will be returned', {
+                        status: failedStatus,
+                        errorCode,
+                        message: errorMessage,
+                        note: 'This status will be excluded from results'
+                    });
+                }
+            }
+            // Update searchedStatuses to reflect only successful searches
+            if (failedStatuses.length > 0) {
+                searchedStatuses = statuses.filter(s => !failedStatuses.some(f => f.status === s));
+            }
+            // Sort merged results by createdAt descending (most recent first)
+            conversations.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            // Limit to requested size after merging
+            const effectiveLimit = input.limit || 50;
+            if (conversations.length > effectiveLimit) {
+                conversations = conversations.slice(0, effectiveLimit);
+            }
+            // Pagination for merged results - show both returned count and real total
+            pagination = {
+                totalResults: conversations.length,
+                totalAvailable: Object.keys(totalByStatus).length > 0 ? totalAvailable : undefined,
+                totalByStatus: Object.keys(totalByStatus).length > 0 ? totalByStatus : undefined,
+                errors: failedStatuses.length > 0 ? failedStatuses : undefined,
+                note: failedStatuses.length > 0
+                    ? `[WARNING] ${failedStatuses.length} status(es) failed - results incomplete! Failed: ${failedStatuses.map(f => `${f.status} (${f.code})`).join(', ')}. Totals reflect successful statuses only.`
+                    : `Merged results from ${Object.keys(totalByStatus).length} statuses. Returned ${conversations.length} of ${totalAvailable} total conversations.`
+            };
+            logger.info('Multi-status search completed', {
+                statusesSearched: searchedStatuses,
+                failedStatuses: failedStatuses.length > 0 ? failedStatuses : undefined,
+                totalResults: conversations.length,
+                totalAvailable: failedStatuses.length > 0 ? 'partial failure' : totalAvailable
+            });
+        }
+        // Apply client-side createdBefore filtering
+        // NOTE: Help Scout API doesn't support createdBefore natively, so this filters after fetching
+        // Pagination is rebuilt below to distinguish filtered count from API total
+        let clientSideFiltered = false;
+        const originalPagination = pagination;
+        if (input.createdBefore) {
+            const filterResult = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'searchConversations');
+            conversations = filterResult.filtered;
+            clientSideFiltered = filterResult.wasFiltered;
+            if (clientSideFiltered) {
+                // Rebuild pagination to show both filtered and pre-filter counts
+                if (input.status) {
+                    // Single-status path: originalPagination is Help Scout's page object with totalElements
+                    pagination = this.buildFilteredPagination(conversations.length, originalPagination, true);
+                }
+                else {
+                    // Multi-status path: originalPagination has our custom merged structure
+                    const merged = originalPagination;
+                    pagination = {
+                        totalResults: conversations.length,
+                        totalAvailable: merged?.totalAvailable,
+                        totalByStatus: merged?.totalByStatus,
+                        errors: merged?.errors,
+                        note: `Client-side createdBefore filter applied to merged results. totalResults shows filtered count (${conversations.length}), totalAvailable shows pre-filter total (${merged?.totalAvailable}). ${merged?.note || ''}`
+                    };
+                }
+            }
+        }
+        // Apply field selection if specified
+        if (input.fields && input.fields.length > 0) {
+            conversations = conversations.map(conv => {
+                const filtered = {};
+                input.fields.forEach(field => {
+                    if (field in conv) {
+                        filtered[field] = conv[field];
+                    }
+                });
+                return filtered;
+            });
+        }
+        const results = {
+            results: conversations,
+            pagination,
+            searchInfo: {
+                query: input.query,
+                statusesSearched: searchedStatuses,
+                inboxScope: this.formatInboxScope(effectiveInboxId, input.inboxId),
+                clientSideFiltering: clientSideFiltered ? 'createdBefore filter applied after API fetch - see pagination.totalResults for filtered count and pagination.totalAvailable for API total' : undefined,
+                searchGuidance: conversations.length === 0 ? [
+                    'If no results found, try:',
+                    '1. Broaden search terms or extend time range',
+                    '2. Check if inbox ID is correct',
+                    '3. Try including spam status explicitly',
+                    !effectiveInboxId ? '4. Set HELPSCOUT_DEFAULT_INBOX_ID to scope searches to your primary inbox' : undefined
+                ].filter(Boolean) : (!effectiveInboxId ? [
+                    'Note: Searching ALL inboxes. For better LLM context, set HELPSCOUT_DEFAULT_INBOX_ID environment variable.'
+                ] : undefined),
+            },
+        };
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify(results, null, 2),
+                },
+            ],
+        };
+    }
+    async getConversationSummary(args) {
+        const input = GetConversationSummaryInputSchema.parse(args);
+        // Get conversation details
+        const conversation = await helpScoutClient.get(`/conversations/${input.conversationId}`);
+        // Get threads to find first customer message and latest staff reply
+        const threadsResponse = await helpScoutClient.get(`/conversations/${input.conversationId}/threads`, { page: 1, size: 50 });
+        const threads = threadsResponse._embedded?.threads || [];
+        const customerThreads = threads.filter(t => t.type === 'customer');
+        const staffThreads = threads.filter(t => t.type === 'message' && t.createdBy);
+        const firstCustomerMessage = customerThreads.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
+        const latestStaffReply = staffThreads.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+        // Extract linked conversation IDs from threads (forwardparent/forwardchild, lineitem references)
+        const linkedConversationIds = [
+            ...new Set(threads
+                .filter((t) => t.linkedConversationId)
+                .map((t) => t.linkedConversationId)),
+        ];
+        // Extract lineitem threads (state changes like assignment, status, linked conversations)
+        const lineItems = threads
+            .filter(t => t.type === 'lineitem')
+            .map(t => ({
+            id: t.id,
+            action: t.action,
+            body: t.body,
+            createdAt: t.createdAt,
+            createdBy: t.createdBy,
+        }));
+        // Check conversation _links for cross-references (raw API response may include these)
+        const conversationLinks = conversation._links || {};
+        const closedBy = conversation.closedBy || null;
+        const closedAt = conversation.closedAt || null;
+        const summary = {
+            conversation: {
+                id: conversation.id,
+                subject: conversation.subject,
+                status: conversation.status,
+                createdAt: conversation.createdAt,
+                updatedAt: conversation.updatedAt,
+                closedAt,
+                closedBy,
+                customer: config.security.allowPii ? conversation.customer : (conversation.customer ? {
+                    id: conversation.customer.id,
+                    email: conversation.customer.email != null ? '[redacted]' : conversation.customer.email,
+                    firstName: conversation.customer.firstName != null ? '[redacted]' : conversation.customer.firstName,
+                    lastName: conversation.customer.lastName != null ? '[redacted]' : conversation.customer.lastName,
+                } : null),
+                assignee: config.security.allowPii ? conversation.assignee : (conversation.assignee ? {
+                    id: conversation.assignee.id,
+                    firstName: '[redacted]',
+                    lastName: '[redacted]',
+                    email: '[redacted]',
+                } : null),
+                tags: conversation.tags,
+            },
+            linkedConversationIds: linkedConversationIds.length > 0 ? linkedConversationIds : undefined,
+            lineItems: lineItems.length > 0 ? lineItems : undefined,
+            firstCustomerMessage: firstCustomerMessage ? {
+                id: firstCustomerMessage.id,
+                body: config.security.allowPii ? firstCustomerMessage.body : PII_REDACTED_BODY,
+                createdAt: firstCustomerMessage.createdAt,
+                customer: config.security.allowPii ? firstCustomerMessage.customer : (firstCustomerMessage.customer ? {
+                    id: firstCustomerMessage.customer.id,
+                    email: firstCustomerMessage.customer.email != null ? '[redacted]' : firstCustomerMessage.customer.email,
+                    firstName: firstCustomerMessage.customer.firstName != null ? '[redacted]' : firstCustomerMessage.customer.firstName,
+                    lastName: firstCustomerMessage.customer.lastName != null ? '[redacted]' : firstCustomerMessage.customer.lastName,
+                } : null),
+            } : null,
+            latestStaffReply: latestStaffReply ? {
+                id: latestStaffReply.id,
+                body: config.security.allowPii ? latestStaffReply.body : PII_REDACTED_BODY,
+                createdAt: latestStaffReply.createdAt,
+                createdBy: config.security.allowPii ? latestStaffReply.createdBy : (latestStaffReply.createdBy ? {
+                    id: latestStaffReply.createdBy.id,
+                    firstName: '[redacted]',
+                    lastName: '[redacted]',
+                    email: '[redacted]',
+                } : null),
+            } : null,
+        };
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify(summary, null, 2),
+                },
+            ],
+        };
+    }
+    async getThreads(args) {
+        const input = GetThreadsInputSchema.parse(args);
+        const response = await helpScoutClient.get(`/conversations/${input.conversationId}/threads`, {
+            page: 1,
+            size: input.limit,
+        });
+        const threads = response._embedded?.threads || [];
+        // Redact PII if configured
+        const processedThreads = threads.map(thread => ({
+            ...thread,
+            body: config.security.allowPii ? thread.body : PII_REDACTED_BODY,
+        }));
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        conversationId: input.conversationId,
+                        threads: processedThreads,
+                        pagination: response.page,
+                        nextCursor: response._links?.next?.href,
+                    }, null, 2),
+                },
+            ],
+        };
+    }
+    async getAttachment(args) {
+        const input = GetAttachmentInputSchema.parse(args);
+        // HS /data endpoint returns { data: <base64> } — reliable across all mime types.
+        const response = await helpScoutClient.get(`/conversations/${input.conversationId}/attachments/${input.attachmentId}/data`);
+        const base64 = typeof response === 'string'
+            ? response
+            : (response?.data ?? '');
+        if (!base64) {
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Attachment data field empty',
+                            conversationId: input.conversationId,
+                            attachmentId: input.attachmentId,
+                        }, null, 2),
+                    }],
+            };
+        }
+        const buf = Buffer.from(base64, 'base64');
+        const format = resolveAttachmentFormat(buf, input.format);
+        const truncated = buf.length > input.maxBytes;
+        const slice = truncated ? buf.slice(0, input.maxBytes) : buf;
+        // Detect image MIME via magic bytes so we can return an MCP `image` content
+        // block (Claude vision-readable) alongside the JSON metadata. Without this
+        // the agent only gets base64 wrapped in text and cannot actually "see" the
+        // attachment — defeating the whole point for screenshot-driven triage.
+        const head4 = buf.slice(0, 4).toString('hex');
+        const head3 = buf.slice(0, 3).toString('hex');
+        const head12 = buf.slice(0, 12).toString('hex');
+        let imageMime = null;
+        if (head4 === '89504e47')
+            imageMime = 'image/png';
+        else if (head4 === '47494638')
+            imageMime = 'image/gif';
+        else if (head3 === 'ffd8ff')
+            imageMime = 'image/jpeg';
+        else if (head4 === '52494646' && head12.slice(16, 24) === '57454250')
+            imageMime = 'image/webp';
+        // Cap inline-image return at 5 MB. Above that, agents typically don't need
+        // the full image (token cost spirals) and the metadata + first-N-bytes
+        // base64 stays available via the text block.
+        const IMAGE_INLINE_CAP = 5 * 1024 * 1024;
+        const returnAsImage = imageMime !== null && format === 'base64' && !truncated && slice.length <= IMAGE_INLINE_CAP;
+        const payload = format === 'text'
+            ? slice.toString('utf-8')
+            : slice.toString('base64');
+        const metadata = {
+            conversationId: input.conversationId,
+            attachmentId: input.attachmentId,
+            format,
+            sizeBytes: buf.length,
+            truncated,
+            returnedBytes: slice.length,
+        };
+        if (imageMime) {
+            metadata.mimeType = imageMime;
+            metadata.viewableAsImage = returnAsImage;
+            if (!returnAsImage) {
+                // Explain why the image block was skipped so the agent knows whether
+                // it can act on the data (e.g. truncated → ask for a smaller copy).
+                metadata.imageBlockSkippedReason = truncated
+                    ? 'attachment exceeded maxBytes; bytes truncated, image block omitted to avoid sending a partial image'
+                    : slice.length > IMAGE_INLINE_CAP
+                        ? `attachment >${IMAGE_INLINE_CAP} bytes; image block omitted to limit tokens`
+                        : 'unknown';
+            }
+        }
+        // Only include base64 inline in JSON when we are NOT returning a separate
+        // image block — otherwise the same bytes ship twice (token waste).
+        if (!returnAsImage) {
+            metadata.content = payload;
+        }
+        const blocks = [
+            { type: 'text', text: JSON.stringify(metadata, null, 2) },
+        ];
+        if (returnAsImage && imageMime) {
+            blocks.push({
+                type: 'image',
+                data: slice.toString('base64'),
+                mimeType: imageMime,
+            });
+        }
+        return { content: blocks };
+    }
+    async getOriginalSource(args) {
+        const input = GetOriginalSourceInputSchema.parse(args);
+        const response = await helpScoutClient.get(`/conversations/${input.conversationId}/threads/${input.threadId}/original-source`);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        conversationId: input.conversationId,
+                        threadId: input.threadId,
+                        originalSource: response.data || response,
+                    }, null, 2),
+                },
+            ],
+        };
+    }
+    async getServerTime() {
+        const now = new Date();
+        const serverTime = {
+            isoTime: now.toISOString(),
+            unixTime: Math.floor(now.getTime() / 1000),
+        };
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify(serverTime, null, 2),
+                },
+            ],
+        };
+    }
+    async listAllInboxes(args) {
+        const input = ListAllInboxesInputSchema.parse(args);
+        const limit = input.limit || 100;
+        const response = await helpScoutClient.get('/mailboxes', {
+            page: 1,
+            size: limit,
+        });
+        const inboxes = response._embedded?.mailboxes || [];
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        inboxes: inboxes.map(inbox => ({
+                            id: inbox.id,
+                            name: inbox.name,
+                            email: inbox.email,
+                            createdAt: inbox.createdAt,
+                            updatedAt: inbox.updatedAt,
+                        })),
+                        totalInboxes: inboxes.length,
+                        usage: 'Use the "id" field from these results in your conversation searches',
+                        nextSteps: [
+                            'To search in a specific inbox, use the inbox ID with comprehensiveConversationSearch or searchConversations',
+                            'To search across all inboxes, omit the inboxId parameter',
+                        ],
+                    }, null, 2),
+                },
+            ],
+        };
+    }
+    async advancedConversationSearch(args) {
+        const input = AdvancedConversationSearchInputSchema.parse(args);
+        // Build HelpScout query syntax
+        const queryParts = [];
+        // Content/body search (with injection protection)
+        if (input.contentTerms && input.contentTerms.length > 0) {
+            const bodyQueries = input.contentTerms.map(term => `body:"${this.escapeQueryTerm(term)}"`);
+            queryParts.push(`(${bodyQueries.join(' OR ')})`);
+        }
+        // Subject search (with injection protection)
+        if (input.subjectTerms && input.subjectTerms.length > 0) {
+            const subjectQueries = input.subjectTerms.map(term => `subject:"${this.escapeQueryTerm(term)}"`);
+            queryParts.push(`(${subjectQueries.join(' OR ')})`);
+        }
+        // Email searches (with injection protection)
+        if (input.customerEmail) {
+            queryParts.push(`email:"${this.escapeQueryTerm(input.customerEmail)}"`);
+        }
+        // Handle email domain search (with injection protection)
+        if (input.emailDomain) {
+            const domain = input.emailDomain.replace('@', ''); // Remove @ if present
+            queryParts.push(`email:"${this.escapeQueryTerm(domain)}"`);
+        }
+        // Tag search (with injection protection)
+        if (input.tags && input.tags.length > 0) {
+            const tagQueries = input.tags.map(tag => `tag:"${this.escapeQueryTerm(tag)}"`);
+            queryParts.push(`(${tagQueries.join(' OR ')})`);
+        }
+        // Build final query
+        const queryString = queryParts.length > 0 ? queryParts.join(' AND ') : undefined;
+        // Set up query parameters
+        const queryParams = {
+            page: 1,
+            size: input.limit || 50,
+            sortField: 'createdAt',
+            sortOrder: 'desc',
+        };
+        if (queryString) {
+            queryParams.query = queryString;
+        }
+        // Apply inbox scoping: explicit inboxId > default > all inboxes
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        if (effectiveInboxId) {
+            queryParams.mailbox = effectiveInboxId;
+        }
+        // Default to all statuses for consistency with searchConversations (v1.6.0+)
+        queryParams.status = input.status || 'all';
+        const queryWithDate = this.appendCreatedAtFilter(queryParams.query, input.createdAfter);
+        if (queryWithDate)
+            queryParams.query = queryWithDate;
+        const response = await helpScoutClient.get('/conversations', queryParams);
+        let conversations = response._embedded?.conversations || [];
+        let clientSideFiltered = false;
+        const originalCount = conversations.length;
+        if (input.createdBefore) {
+            const result = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'advancedConversationSearch');
+            conversations = result.filtered;
+            clientSideFiltered = result.wasFiltered;
+        }
+        const paginationInfo = this.buildFilteredPagination(conversations.length, response.page, clientSideFiltered);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: conversations,
+                        searchQuery: queryString,
+                        inboxScope: this.formatInboxScope(effectiveInboxId, input.inboxId),
+                        searchCriteria: {
+                            contentTerms: input.contentTerms,
+                            subjectTerms: input.subjectTerms,
+                            customerEmail: input.customerEmail,
+                            emailDomain: input.emailDomain,
+                            tags: input.tags,
+                        },
+                        pagination: paginationInfo,
+                        nextCursor: response._links?.next?.href,
+                        clientSideFiltering: clientSideFiltered ? `createdBefore filter removed ${originalCount - conversations.length} of ${originalCount} results` : undefined,
+                        note: !effectiveInboxId ? 'Searching ALL inboxes. Set HELPSCOUT_DEFAULT_INBOX_ID for better LLM context.' : undefined,
+                    }, null, 2),
+                },
+            ],
+        };
+    }
+    /**
+     * Performs comprehensive conversation search across multiple statuses
+     * @param args - Search parameters including search terms, statuses, and timeframe
+     * @returns Promise<CallToolResult> with search results organized by status
+     * @example
+     * comprehensiveConversationSearch({
+     *   searchTerms: ["urgent", "billing"],
+     *   timeframeDays: 30,
+     *   inboxId: "123456"
+     * })
+     */
+    async comprehensiveConversationSearch(args) {
+        const input = MultiStatusConversationSearchInputSchema.parse(args);
+        const searchContext = this.buildComprehensiveSearchContext(input);
+        const searchResults = await this.executeMultiStatusSearch(searchContext);
+        const summary = this.formatComprehensiveSearchResults(searchResults, searchContext);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify(summary, null, 2),
+                },
+            ],
+        };
+    }
+    /**
+     * Build search context from input parameters
+     */
+    buildComprehensiveSearchContext(input) {
+        const createdAfter = input.createdAfter || this.calculateTimeRange(input.timeframeDays);
+        const searchQuery = this.buildSearchQuery(input.searchTerms, input.searchIn);
+        // Apply inbox scoping: explicit inboxId > default > all inboxes
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        return {
+            input,
+            createdAfter,
+            searchQuery,
+            effectiveInboxId,
+        };
+    }
+    /**
+     * Calculate time range for search
+     * Note: Help Scout API requires ISO 8601 format WITHOUT milliseconds
+     */
+    calculateTimeRange(timeframeDays) {
+        const timeRange = new Date();
+        timeRange.setDate(timeRange.getDate() - timeframeDays);
+        // Strip milliseconds - Help Scout rejects dates with .xxx format
+        return timeRange.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    }
+    /**
+     * Build Help Scout search query from terms and search locations (with injection protection)
+     */
+    buildSearchQuery(terms, searchIn) {
+        const queries = [];
+        for (const term of terms) {
+            const termQueries = [];
+            const escapedTerm = this.escapeQueryTerm(term);
+            if (searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BODY) || searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BOTH)) {
+                termQueries.push(`body:"${escapedTerm}"`);
+            }
+            if (searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.SUBJECT) || searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BOTH)) {
+                termQueries.push(`subject:"${escapedTerm}"`);
+            }
+            if (termQueries.length > 0) {
+                queries.push(`(${termQueries.join(' OR ')})`);
+            }
+        }
+        return queries.join(' OR ');
+    }
+    /**
+     * Execute search across multiple statuses with error handling
+     */
+    async executeMultiStatusSearch(context) {
+        const { input, createdAfter, searchQuery, effectiveInboxId } = context;
+        const allResults = [];
+        for (const status of input.statuses) {
+            try {
+                const result = await this.searchSingleStatus({
+                    status,
+                    searchQuery,
+                    createdAfter,
+                    limitPerStatus: input.limitPerStatus,
+                    inboxId: effectiveInboxId,
+                    createdBefore: input.createdBefore,
+                });
+                allResults.push(result);
+            }
+            catch (error) {
+                // Use type guard instead of unsafe cast
+                if (!isApiError(error)) {
+                    // Non-API errors (TypeError, network failures) should not be silently swallowed
+                    logger.error('Unexpected non-API error in multi-status search', {
+                        status,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                    throw error;
+                }
+                // Critical API errors should fail the entire operation.
+                if (error.code === 'UNAUTHORIZED' || error.code === 'INVALID_INPUT') {
+                    logger.error('Critical API error in multi-status search - aborting', {
+                        status,
+                        errorCode: error.code,
+                        message: error.message
+                    });
+                    throw error;
+                }
+                // Non-critical API errors: log and include in response
+                logger.error('Status search failed - partial results will be returned', {
+                    status,
+                    errorCode: error.code,
+                    message: error.message,
+                    note: 'This status will be excluded from results'
+                });
+                allResults.push({
+                    status,
+                    totalCount: 0,
+                    conversations: [],
+                    searchQuery,
+                    error: `Search failed (${error.code}): ${error.message}`,
+                });
+            }
+        }
+        return allResults;
+    }
+    /**
+     * Apply client-side createdBefore filter (Help Scout API does not support this natively).
+     * Returns filtered conversations and metadata about what was removed.
+     */
+    applyCreatedBeforeFilter(conversations, createdBefore, context) {
+        const beforeDate = new Date(createdBefore);
+        if (isNaN(beforeDate.getTime())) {
+            throw new Error(`Invalid createdBefore date format: ${createdBefore}. Expected ISO 8601 format (e.g., 2023-01-15T00:00:00Z)`);
+        }
+        const originalCount = conversations.length;
+        const filtered = conversations.filter(conv => new Date(conv.createdAt) < beforeDate);
+        const removedCount = originalCount - filtered.length;
+        if (removedCount > 0) {
+            logger.warn(`Client-side createdBefore filter applied - ${context}`, {
+                originalCount,
+                filteredCount: filtered.length,
+                removedCount,
+                note: 'Help Scout API does not support createdBefore parameter natively'
+            });
+        }
+        return { filtered, wasFiltered: removedCount > 0, removedCount };
+    }
+    /**
+     * Build inbox scope description string for response metadata.
+     */
+    formatInboxScope(effectiveInboxId, explicitInboxId) {
+        if (!effectiveInboxId)
+            return 'ALL inboxes';
+        return explicitInboxId ? `Specific inbox: ${effectiveInboxId}` : `Default inbox: ${effectiveInboxId}`;
+    }
+    /**
+     * Build pagination info that distinguishes filtered count from API total.
+     * Used when createdBefore client-side filtering modifies a single API response.
+     */
+    buildFilteredPagination(filteredCount, apiPage, wasFiltered) {
+        if (!wasFiltered)
+            return apiPage;
+        return {
+            totalResults: filteredCount,
+            totalAvailable: apiPage?.totalElements,
+            note: `Results filtered client-side by createdBefore. totalResults shows filtered count (${filteredCount}), totalAvailable shows pre-filter API total (${apiPage?.totalElements}).`
+        };
+    }
+    /**
+     * Search conversations for a single status
+     */
+    async searchSingleStatus(params) {
+        const queryWithDate = this.appendCreatedAtFilter(params.searchQuery, params.createdAfter);
+        const queryParams = {
+            page: 1,
+            size: params.limitPerStatus,
+            sortField: TOOL_CONSTANTS.DEFAULT_SORT_FIELD,
+            sortOrder: TOOL_CONSTANTS.DEFAULT_SORT_ORDER,
+            query: queryWithDate || params.searchQuery,
+            status: params.status,
+        };
+        if (params.inboxId) {
+            queryParams.mailbox = params.inboxId;
+        }
+        const response = await helpScoutClient.get('/conversations', queryParams);
+        let conversations = response._embedded?.conversations || [];
+        const apiTotalElements = response.page?.totalElements || conversations.length;
+        let filteredByDate = false;
+        if (params.createdBefore) {
+            const result = this.applyCreatedBeforeFilter(conversations, params.createdBefore, `searchSingleStatus(${params.status})`);
+            conversations = result.filtered;
+            filteredByDate = result.wasFiltered;
+        }
+        return {
+            status: params.status,
+            totalCount: filteredByDate ? conversations.length : apiTotalElements,
+            totalCountBeforeFilter: filteredByDate ? apiTotalElements : undefined,
+            conversations,
+            searchQuery: params.searchQuery,
+            filteredByCreatedBefore: filteredByDate,
+        };
+    }
+    /**
+     * Format comprehensive search results into summary response
+     */
+    formatComprehensiveSearchResults(allResults, context) {
+        const { input, createdAfter, searchQuery, effectiveInboxId } = context;
+        const totalConversations = allResults.reduce((sum, result) => sum + result.conversations.length, 0);
+        const totalAvailable = allResults.reduce((sum, result) => sum + result.totalCount, 0);
+        const hasClientSideFiltering = allResults.some(r => r.filteredByCreatedBefore);
+        const totalBeforeFilter = hasClientSideFiltering
+            ? allResults.reduce((sum, result) => sum + (result.totalCountBeforeFilter || result.totalCount), 0)
+            : undefined;
+        return {
+            searchTerms: input.searchTerms,
+            searchQuery,
+            searchIn: input.searchIn,
+            inboxScope: this.formatInboxScope(effectiveInboxId, input.inboxId),
+            timeframe: {
+                createdAfter,
+                createdBefore: input.createdBefore,
+                days: input.timeframeDays,
+            },
+            totalConversationsFound: totalConversations,
+            totalAvailableAcrossStatuses: totalAvailable,
+            totalBeforeClientSideFiltering: totalBeforeFilter,
+            clientSideFilteringApplied: hasClientSideFiltering ?
+                `createdBefore filter applied - totalConversationsFound (${totalConversations}) reflects filtered results, totalBeforeClientSideFiltering (${totalBeforeFilter}) shows pre-filter API totals` : undefined,
+            failedStatuses: allResults.filter(r => r.error).map(r => `[WARNING] Status "${r.status}" search failed: ${r.error}`),
+            resultsByStatus: allResults,
+            searchTips: totalConversations === 0 ? [
+                'Try broader search terms or increase the timeframe',
+                'Check if the inbox ID is correct',
+                'Consider searching without status restrictions first',
+                'Verify that conversations exist for the specified criteria',
+                !effectiveInboxId ? 'Set HELPSCOUT_DEFAULT_INBOX_ID to scope searches to your primary inbox' : undefined
+            ].filter(Boolean) : (!effectiveInboxId ? [
+                'Note: Searching ALL inboxes. For better LLM context, set HELPSCOUT_DEFAULT_INBOX_ID environment variable.'
+            ] : undefined),
+        };
+    }
+    async structuredConversationFilter(args) {
+        const input = StructuredConversationFilterInputSchema.parse(args);
+        const queryParams = {
+            page: 1,
+            size: input.limit,
+            sortField: input.sortBy,
+            sortOrder: input.sortOrder,
+        };
+        // Apply unique structural filters
+        if (input.assignedTo !== undefined)
+            queryParams.assigned_to = input.assignedTo;
+        if (input.folderId !== undefined)
+            queryParams.folder = input.folderId;
+        if (input.conversationNumber !== undefined)
+            queryParams.number = input.conversationNumber;
+        // Apply customerIds via query syntax if provided
+        if (input.customerIds && input.customerIds.length > 0) {
+            queryParams.query = `(${input.customerIds.map(id => `customerIds:${id}`).join(' OR ')})`;
+        }
+        // Apply combination filters
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        if (effectiveInboxId)
+            queryParams.mailbox = effectiveInboxId;
+        // Send status=all explicitly (Help Scout defaults to active-only when omitted)
+        queryParams.status = input.status || 'all';
+        if (input.tag)
+            queryParams.tag = input.tag;
+        if (input.modifiedSince)
+            queryParams.modifiedSince = input.modifiedSince;
+        const queryWithDate = this.appendCreatedAtFilter(queryParams.query, input.createdAfter);
+        if (queryWithDate)
+            queryParams.query = queryWithDate;
+        const response = await helpScoutClient.get('/conversations', queryParams);
+        let conversations = response._embedded?.conversations || [];
+        let clientSideFiltered = false;
+        const originalCount = conversations.length;
+        if (input.createdBefore) {
+            const result = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'structuredConversationFilter');
+            conversations = result.filtered;
+            clientSideFiltered = result.wasFiltered;
+        }
+        const paginationInfo = this.buildFilteredPagination(conversations.length, response.page, clientSideFiltered);
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: conversations,
+                        filterApplied: {
+                            filterType: 'structural',
+                            assignedTo: input.assignedTo,
+                            folderId: input.folderId,
+                            customerIds: input.customerIds,
+                            conversationNumber: input.conversationNumber,
+                            uniqueSorting: ['waitingSince', 'customerName', 'customerEmail'].includes(input.sortBy) ? input.sortBy : undefined,
+                        },
+                        inboxScope: this.formatInboxScope(effectiveInboxId, input.inboxId),
+                        pagination: paginationInfo,
+                        nextCursor: response._links?.next?.href,
+                        clientSideFiltering: clientSideFiltered ? `createdBefore filter removed ${originalCount - conversations.length} of ${originalCount} results` : undefined,
+                        note: 'Structural filtering applied. For content-based search or rep activity, use comprehensiveConversationSearch.',
+                    }, null, 2),
+                }],
+        };
+    }
+    async createConversation(args) {
+        const input = CreateConversationInputSchema.parse(args);
+        // Hard mechanical backstop: this MCP server is configured for an
+        // agent-orchestrated pipeline where ONLY the human sends customer mail.
+        // Any attempt to create an outbound conversation that is NOT a draft is
+        // rejected here, regardless of what an agent's instructions say.
+        // (Recurrence-prevention for the 2026-05-04 incident: 5 mails sent by
+        //  HoS via createConversation with draft:false. Agent rule was changed,
+        //  but rule-only is a single point of failure — this is the floor.)
+        if (input.draft !== true) {
+            throw new Error('createConversation: draft:false is BLOCKED by server policy. ' +
+                'All outbound conversations must be drafts (`draft: true`); a human sends from the Help Scout UI. ' +
+                'If you believe an exception is warranted, escalate to the human via a Paperclip issue comment ' +
+                'with "READY FOR MAARTEN TO SEND" and leave the draft in place. Never bypass this.');
+        }
+        // Format gate (always-wrong rules — incident KEU-208 / 2026-05-04: HoS
+        // wrote a customer mail directly bypassing Support Rep skill, which carries
+        // the pre-send gate. These rules apply universally regardless of agent.
+        enforceCustomerMailFormatRules(input.text, 'createConversation');
+        const thread = {
+            type: input.draft ? 'reply' : 'reply',
+            customer: { email: input.customer },
+            text: input.text,
+            draft: input.draft,
+        };
+        if (input.cc)
+            thread.cc = input.cc;
+        if (input.bcc)
+            thread.bcc = input.bcc;
+        const body = {
+            subject: input.subject,
+            customer: { email: input.customer },
+            mailboxId: input.mailboxId,
+            type: 'email',
+            status: input.status,
+            threads: [thread],
+        };
+        if (input.tags)
+            body.tags = input.tags;
+        if (input.assignTo !== undefined)
+            body.assignTo = input.assignTo;
+        await helpScoutClient.post('/conversations', body);
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        action: input.draft ? 'draft_conversation_created' : 'conversation_created',
+                        customer: input.customer,
+                        subject: input.subject,
+                        message: input.draft
+                            ? 'New draft conversation created. Review and send it from the Help Scout UI.'
+                            : 'New conversation created and sent to customer.',
+                    }, null, 2),
+                }],
+        };
+    }
+    async createReply(args) {
+        const input = CreateReplyInputSchema.parse(args);
+        // Hard mechanical backstop — see createConversation above. Drafts only.
+        // The HS API treats `draft:false` (or omission) as send-immediately. We
+        // reject both at the server boundary so no agent rule-drift can bypass.
+        if (input.draft !== true) {
+            throw new Error('createReply: draft:false (or omitted) is BLOCKED by server policy. ' +
+                'All replies must be drafts (`draft: true`); a human sends from the Help Scout UI. ' +
+                'If you believe an exception is warranted, leave the draft in place and add a Paperclip ' +
+                'issue comment "READY FOR MAARTEN TO SEND". Never bypass this.');
+        }
+        // Format gate — see createConversation above.
+        enforceCustomerMailFormatRules(input.text, 'createReply');
+        const body = {
+            customer: { email: input.customer },
+            text: input.text,
+            draft: input.draft,
+        };
+        if (input.status)
+            body.status = input.status;
+        if (input.cc)
+            body.cc = input.cc;
+        if (input.bcc)
+            body.bcc = input.bcc;
+        await helpScoutClient.post(`/conversations/${input.conversationId}/reply`, body);
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId: input.conversationId,
+                        action: input.draft ? 'draft_created' : 'reply_sent',
+                        message: input.draft
+                            ? 'Draft reply created. Review and send it from the Help Scout UI.'
+                            : 'Reply sent to customer.',
+                    }, null, 2),
+                }],
+        };
+    }
+    async createNote(args) {
+        const input = CreateNoteInputSchema.parse(args);
+        // Auto-correction 1: agents repeatedly send pre-escaped HTML entities
+        // (`&lt;p&gt;` instead of `<p>`) thinking they need to escape for JSON
+        // transport. JSON encoding is already handled by the MCP layer. If we
+        // detect double-escaping, decode it back to raw HTML before sending.
+        // Reference incident: KEU-209 / 2026-05-05 / HS#1291696 — HoO sent
+        // `&lt;p&gt;&lt;strong&gt;[HoO – Imunify Triage]&lt;/strong&gt;...` and
+        // HS rendered the entities as literal text in the note.
+        let noteText = input.text;
+        const escapedTagPattern = /&lt;\/?(?:p|strong|em|br|ul|ol|li|code|pre|a|h[1-6]|div|span)\b/i;
+        if (escapedTagPattern.test(noteText)) {
+            noteText = noteText
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/&amp;/g, '&'); // last to avoid double-decoding
+        }
+        // Auto-correction 2: nl2br-style blank-line preservation. HS notes don't
+        // add margin between consecutive <p> blocks — agents typically write
+        // `</p>\n\n<p>` expecting visual spacing. Inject <br/> between any pair
+        // of block elements separated by ≥1 blank line so the rendered note has
+        // the spacing the author intended. Reference: KEU-209 / 2026-05-05 user
+        // feedback "nu mis ik nog wel de enter rules — nl2br zeg maar".
+        noteText = noteText.replace(/\n[ \t]*\n+/g, '\n<br/>\n');
+        await helpScoutClient.post(`/conversations/${input.conversationId}/notes`, { text: noteText });
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId: input.conversationId,
+                        action: 'note_created',
+                        message: 'Internal note added to conversation.',
+                    }, null, 2),
+                }],
+        };
+    }
+    async updateConversationStatus(args) {
+        const input = UpdateConversationStatusInputSchema.parse(args);
+        await helpScoutClient.patch(`/conversations/${input.conversationId}`, { op: 'replace', path: '/status', value: input.status });
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId: input.conversationId,
+                        action: 'status_updated',
+                        newStatus: input.status,
+                        message: `Conversation status changed to ${input.status}.`,
+                    }, null, 2),
+                }],
+        };
+    }
+    async updateConversationTags(args) {
+        const input = UpdateConversationTagsInputSchema.parse(args);
+        await helpScoutClient.put(`/conversations/${input.conversationId}/tags`, { tags: input.tags });
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId: input.conversationId,
+                        action: 'tags_updated',
+                        tags: input.tags,
+                        message: input.tags.length > 0
+                            ? `Tags updated: ${input.tags.join(', ')}`
+                            : 'All tags removed from conversation.',
+                    }, null, 2),
+                }],
+        };
+    }
+    // ── Customer Tools (NAS-680, NAS-727) ──
+    redactAddress(address) {
+        if (config.security.allowPii)
+            return address;
+        return {
+            city: address.city != null ? '[redacted]' : address.city,
+            state: address.state != null ? '[redacted]' : address.state,
+            postalCode: address.postalCode != null ? '[redacted]' : address.postalCode,
+            lines: address.lines ? address.lines.map(() => '[redacted]') : undefined,
+            country: address.country, // Country is not PII
+        };
+    }
+    redactCustomer(customer) {
+        if (config.security.allowPii)
+            return customer;
+        const { background, firstName, lastName, jobTitle, location, photoUrl, age, _embedded, ...rest } = customer;
+        const redacted = {
+            ...rest,
+            firstName: firstName != null ? '[redacted]' : firstName,
+            lastName: lastName != null ? '[redacted]' : lastName,
+            jobTitle: jobTitle != null ? '[redacted]' : jobTitle,
+            location: location != null ? '[redacted]' : location,
+            photoUrl: photoUrl != null ? '[redacted]' : photoUrl,
+            age: age != null ? '[redacted]' : age,
+            background: background != null ? '[redacted]' : background,
+        };
+        if (_embedded) {
+            const embeddedCopy = { ..._embedded };
+            for (const key of ['emails', 'phones', 'chats', 'social_profiles', 'websites']) {
+                const entries = embeddedCopy[key];
+                if (entries) {
+                    embeddedCopy[key] = entries.map(item => ({
+                        ...item,
+                        value: '[redacted]',
+                    }));
+                }
+            }
+            if (embeddedCopy.properties) {
+                embeddedCopy.properties = embeddedCopy.properties.map(prop => ({
+                    ...prop,
+                    value: prop.value != null ? '[redacted]' : prop.value,
+                    text: prop.text != null ? '[redacted]' : prop.text,
+                }));
+            }
+            redacted._embedded = embeddedCopy;
+        }
+        return redacted;
+    }
+    async getCustomer(args) {
+        const input = GetCustomerInputSchema.parse(args);
+        // Fetch customer profile and address in parallel
+        const [customerResponse, addressResponse] = await Promise.allSettled([
+            helpScoutClient.get(`/customers/${input.customerId}`),
+            helpScoutClient.get(`/customers/${input.customerId}/address`),
+        ]);
+        if (customerResponse.status === 'rejected') {
+            throw customerResponse.reason;
+        }
+        const customer = customerResponse.value;
+        // Handle address response: 404 means no address on file (expected), all other errors should surface
+        let address = null;
+        let addressNote;
+        if (addressResponse.status === 'fulfilled') {
+            address = addressResponse.value;
+        }
+        else {
+            const reason = addressResponse.reason;
+            const is404 = isApiError(reason) && reason.code === 'NOT_FOUND';
+            if (!is404) {
+                // Critical errors (auth, rate limit) should abort entirely
+                if (isApiError(reason) && (reason.code === 'UNAUTHORIZED' || reason.code === 'RATE_LIMIT')) {
+                    throw reason;
+                }
+                // Non-API errors (TypeError, network) should propagate
+                if (!isApiError(reason)) {
+                    throw reason;
+                }
+                // Other API errors: log and surface in response
+                const errorMessage = reason.message || String(reason);
+                logger.error('Address fetch failed for customer', { customerId: input.customerId, error: errorMessage });
+                addressNote = `Address lookup failed: ${errorMessage}`;
+            }
+        }
+        const result = this.redactCustomer(customer);
+        if (address) {
+            result.address = this.redactAddress(address);
+        }
+        if (addressNote) {
+            result.addressNote = addressNote;
+        }
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        customer: result,
+                        usage: 'NEXT STEPS: Use organizationId to explore their org with getOrganization. Use customer.id with structuredConversationFilter(customerIds) to find their conversations.',
+                    }, null, 2),
+                }],
+        };
+    }
+    async listCustomers(args) {
+        const input = ListCustomersInputSchema.parse(args);
+        // v2 API: page size is fixed at 50, 'size' param is not documented/supported
+        const params = {
+            page: input.page,
+            sortField: input.sortField,
+            sortOrder: input.sortOrder,
+            firstName: input.firstName,
+            lastName: input.lastName,
+            query: input.query,
+            mailbox: input.mailbox,
+            modifiedSince: input.modifiedSince,
+        };
+        const response = await helpScoutClient.get('/customers', params);
+        const customers = response._embedded?.customers || [];
+        // Slim view: strip _links and _embedded to keep response concise for browsing.
+        // Use getCustomer for the full profile with all sub-resources.
+        const slimResults = customers.map(c => {
+            const redacted = this.redactCustomer(c);
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { _links, _embedded, ...slim } = redacted;
+            // Extract primary email from _embedded for slim view (redacted if PII protection is on)
+            const emails = _embedded?.emails;
+            if (Array.isArray(emails) && emails.length > 0) {
+                slim.primaryEmail = emails[0].value;
+            }
+            return slim;
+        });
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: slimResults,
+                        returnedCount: customers.length,
+                        pagination: response.page,
+                        usage: 'Use customer.id with getCustomer for full profile (includes emails, phones, address, etc.), or with structuredConversationFilter(customerIds) for their conversations.',
+                    }, null, 2),
+                }],
+        };
+    }
+    // NAS-728: v3 Customer search with email filter
+    async searchCustomersByEmail(args) {
+        const input = SearchCustomersByEmailInputSchema.parse(args);
+        const params = {
+            email: input.email,
+            firstName: input.firstName,
+            lastName: input.lastName,
+            query: input.query,
+            modifiedSince: input.modifiedSince,
+            createdSince: input.createdSince,
+            cursor: input.cursor,
+        };
+        // v3 endpoint: construct absolute URL from configured base URL
+        const v3Url = config.helpscout.baseUrl.replace(/\/v2\/?$/, '/v3/customers');
+        if (v3Url === config.helpscout.baseUrl) {
+            logger.warn('v3 URL construction: baseUrl did not match /v2/ pattern, URL may be incorrect', { baseUrl: config.helpscout.baseUrl, v3Url });
+        }
+        const v3Response = await helpScoutClient.get(v3Url, params);
+        const customers = v3Response._embedded?.customers || [];
+        // Extract cursor token from v3 next link (full URL -> just the cursor param value)
+        let nextCursor;
+        const nextHref = v3Response._links?.next?.href;
+        if (nextHref) {
+            try {
+                const url = new URL(nextHref);
+                nextCursor = url.searchParams.get('cursor') || nextHref;
+            }
+            catch (parseError) {
+                logger.debug('Could not parse v3 next link as URL, using raw href as cursor', {
+                    nextHref,
+                    error: parseError instanceof Error ? parseError.message : String(parseError),
+                });
+                nextCursor = nextHref;
+            }
+        }
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: customers.map(c => this.redactCustomer(c)),
+                        returnedCount: customers.length,
+                        searchedEmail: config.security.allowPii ? input.email : '[redacted]',
+                        nextCursor,
+                        note: 'v3 API uses cursor-based pagination. Pass nextCursor value back as cursor parameter for more results.',
+                        usage: 'Use customer.id with getCustomer for full profile with sub-resources.',
+                    }, null, 2),
+                }],
+        };
+    }
+    // NAS-727: Customer sub-resource contacts tool
+    async getCustomerContacts(args) {
+        const input = GetCustomerContactsInputSchema.parse(args);
+        const cid = input.customerId;
+        // Fetch all 6 sub-resources in parallel via dedicated endpoints
+        const [emailsRes, phonesRes, chatsRes, socialRes, websitesRes, addressRes] = await Promise.allSettled([
+            helpScoutClient.get(`/customers/${cid}/emails`),
+            helpScoutClient.get(`/customers/${cid}/phones`),
+            helpScoutClient.get(`/customers/${cid}/chats`),
+            helpScoutClient.get(`/customers/${cid}/social-profiles`),
+            helpScoutClient.get(`/customers/${cid}/websites`),
+            helpScoutClient.get(`/customers/${cid}/address`),
+        ]);
+        // Helper: extract data or note the error
+        const extract = (settled, label) => {
+            if (settled.status === 'fulfilled')
+                return { data: settled.value };
+            const reason = settled.reason;
+            // 404 = no data on file (normal)
+            if (isApiError(reason) && reason.code === 'NOT_FOUND')
+                return { data: null };
+            // Auth/rate limit errors should abort
+            if (isApiError(reason) && (reason.code === 'UNAUTHORIZED' || reason.code === 'RATE_LIMIT'))
+                throw reason;
+            // Non-API errors (TypeError, ReferenceError, etc.) are programming bugs; propagate them
+            if (!isApiError(reason))
+                throw reason;
+            return { data: null, error: `${label} fetch failed (${reason.code}): ${reason.message}` };
+        };
+        const emails = extract(emailsRes, 'emails');
+        const phones = extract(phonesRes, 'phones');
+        const chats = extract(chatsRes, 'chats');
+        const social = extract(socialRes, 'social profiles');
+        const websites = extract(websitesRes, 'websites');
+        const address = extract(addressRes, 'address');
+        const redactValue = (v) => config.security.allowPii ? v : '[redacted]';
+        const redactEntry = (e) => ({
+            id: e.id, value: redactValue(e.value), ...(e.type ? { type: e.type } : {}),
+        });
+        const result = {
+            customerId: cid,
+            emails: emails.data ? (emails.data._embedded?.emails || []).map(redactEntry) : [],
+            phones: phones.data ? (phones.data._embedded?.phones || []).map(redactEntry) : [],
+            chats: chats.data ? (chats.data._embedded?.chats || []).map(redactEntry) : [],
+            socialProfiles: social.data ? (social.data._embedded?.social_profiles || []).map(redactEntry) : [],
+            websites: websites.data ? (websites.data._embedded?.websites || []).map(e => ({ id: e.id, value: redactValue(e.value) })) : [],
+            address: address.data ? this.redactAddress(address.data) : null,
+        };
+        // Collect any partial errors
+        const errors = [emails, phones, chats, social, websites, address]
+            .map(r => r.error).filter(Boolean);
+        if (errors.length > 0) {
+            logger.error('getCustomerContacts returned partial results', {
+                customerId: cid,
+                failedResources: errors,
+                successCount: 6 - errors.length,
+            });
+            result.partialErrors = errors;
+        }
+        // Warn if all sub-resources returned no data (likely invalid customerId)
+        const allEmpty = !emails.data && !phones.data && !chats.data && !social.data && !websites.data && !address.data;
+        if (allEmpty && errors.length === 0) {
+            result.warning = 'No contact data found. Verify the customerId exists using getCustomer.';
+        }
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        ...result,
+                        usage: 'This returns all contact channels for a customer. Use getCustomer for the full profile with demographics.',
+                    }, null, 2),
+                }],
+        };
+    }
+    // ── Organization Tools (NAS-684, NAS-712) ──
+    redactOrganization(org) {
+        if (config.security.allowPii)
+            return org;
+        return {
+            ...org,
+            website: org.website != null ? '[redacted]' : org.website,
+            domains: org.domains ? org.domains.map(() => '[redacted]') : org.domains,
+            phones: org.phones ? org.phones.map(() => '[redacted]') : org.phones,
+            location: org.location != null ? '[redacted]' : org.location,
+            note: org.note != null ? '[redacted]' : org.note,
+            description: org.description != null ? '[redacted]' : org.description,
+        };
+    }
+    async getOrganization(args) {
+        const input = GetOrganizationInputSchema.parse(args);
+        const params = {};
+        if (input.includeCounts)
+            params.includeCounts = true;
+        if (input.includeProperties)
+            params.includeProperties = true;
+        const org = await helpScoutClient.get(`/organizations/${input.organizationId}`, params);
+        const orgResult = this.redactOrganization(org);
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        organization: orgResult,
+                        usage: 'NEXT STEPS: Use getOrganizationMembers to see customers in this org. Use getOrganizationConversations to see all conversations.',
+                    }, null, 2),
+                }],
+        };
+    }
+    async listOrganizations(args) {
+        const input = ListOrganizationsInputSchema.parse(args);
+        // v2 API: page size is fixed at 50
+        const response = await helpScoutClient.get('/organizations', {
+            page: input.page,
+            sort: `${input.sortField},${input.sortOrder}`,
+        });
+        const organizations = response._embedded?.organizations || [];
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: organizations.map(org => this.redactOrganization(org)),
+                        returnedCount: organizations.length,
+                        pagination: response.page,
+                        nextCursor: response._links?.next?.href,
+                        nextPage: response._links?.next?.href ? (response.page?.number ?? 0) + 1 : undefined,
+                        usage: 'Use organization.id with getOrganization for details, getOrganizationMembers for customers, or getOrganizationConversations for support history.',
+                    }, null, 2),
+                }],
+        };
+    }
+    // NAS-712: Customer-Org relational traversal
+    async getOrganizationMembers(args) {
+        const input = GetOrganizationMembersInputSchema.parse(args);
+        // v2 API: page size is fixed at 50
+        const response = await helpScoutClient.get(`/organizations/${input.organizationId}/customers`, { page: input.page });
+        const customers = response._embedded?.customers || [];
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        organizationId: input.organizationId,
+                        members: customers.map(c => this.redactCustomer(c)),
+                        returnedCount: customers.length,
+                        pagination: response.page,
+                        nextCursor: response._links?.next?.href,
+                        nextPage: response._links?.next?.href ? (response.page?.number ?? 0) + 1 : undefined,
+                        usage: 'Use customer.id with getCustomer for full profile or structuredConversationFilter(customerIds) for their conversations.',
+                    }, null, 2),
+                }],
+        };
+    }
+    async getOrganizationConversations(args) {
+        const input = GetOrganizationConversationsInputSchema.parse(args);
+        // v2 API: page size is fixed at 50
+        const response = await helpScoutClient.get(`/organizations/${input.organizationId}/conversations`, { page: input.page });
+        const conversations = response._embedded?.conversations || [];
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        organizationId: input.organizationId,
+                        conversations: conversations.map(c => ({
+                            id: c.id,
+                            number: c.number,
+                            subject: c.subject,
+                            status: c.status,
+                            customer: config.security.allowPii ? c.customer : (c.customer ? {
+                                id: c.customer.id,
+                                email: c.customer.email != null ? '[redacted]' : c.customer.email,
+                                firstName: c.customer.firstName != null ? '[redacted]' : c.customer.firstName,
+                                lastName: c.customer.lastName != null ? '[redacted]' : c.customer.lastName,
+                            } : null),
+                            assignee: config.security.allowPii ? c.assignee : (c.assignee ? {
+                                id: c.assignee.id,
+                                firstName: '[redacted]',
+                                lastName: '[redacted]',
+                                email: '[redacted]',
+                            } : null),
+                            createdAt: c.createdAt,
+                            updatedAt: c.updatedAt,
+                            closedAt: c.closedAt,
+                            tags: c.tags,
+                        })),
+                        returnedCount: conversations.length,
+                        pagination: response.page,
+                        nextCursor: response._links?.next?.href,
+                        nextPage: response._links?.next?.href ? (response.page?.number ?? 0) + 1 : undefined,
+                        usage: 'Use conversation.id with getThreads to read full message history, or getConversationSummary for a quick overview.',
+                    }, null, 2),
+                }],
+        };
+    }
+}
+export const toolHandler = new ToolHandler();
+//# sourceMappingURL=index.js.map
