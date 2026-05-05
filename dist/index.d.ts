@@ -20,15 +20,17 @@ export declare class HelpScoutMCPServer {
     private setupHandlers;
     start(): Promise<void>;
     /**
-     * Start in HTTP mode behind a reverse proxy. Uses the MCP SDK's
-     * StreamableHTTPServerTransport in stateless mode (no session-id
-     * tracking — each request is independent, simpler for a long-running
-     * service that doesn't need stickiness).
+     * Start in HTTP mode behind a reverse proxy. Stateless StreamableHTTP:
+     * SDK requires a FRESH transport per request — reusing a stateless
+     * transport throws "Stateless transport cannot be reused across requests"
+     * (see WebStandardStreamableHTTPServerTransport.handleRequest line 137).
+     * So we create + connect + close one transport per incoming request.
      *
      * Endpoint: POST /mcp (and GET for SSE polling, per the spec).
      * Auth: Authorization: Bearer <token> against HSMCP_BEARER_TOKENS.
-     * Anything else returns 404. /healthz returns 200 OK without auth so
-     * upstream proxies (Traefik, load-balancers) can probe liveness.
+     * /healthz returns 200 OK without auth so upstream proxies (Traefik,
+     * load-balancers) can probe liveness without consuming a token.
+     * Anything else returns 404.
      */
     private startHttp;
     stop(): Promise<void>;

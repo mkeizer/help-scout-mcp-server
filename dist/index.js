@@ -241,36 +241,46 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
         }
     }
     /**
-     * Start in HTTP mode behind a reverse proxy. Uses the MCP SDK's
-     * StreamableHTTPServerTransport in stateless mode (no session-id
-     * tracking — each request is independent, simpler for a long-running
-     * service that doesn't need stickiness).
+     * Start in HTTP mode behind a reverse proxy. Stateless StreamableHTTP:
+     * SDK requires a FRESH transport per request — reusing a stateless
+     * transport throws "Stateless transport cannot be reused across requests"
+     * (see WebStandardStreamableHTTPServerTransport.handleRequest line 137).
+     * So we create + connect + close one transport per incoming request.
      *
      * Endpoint: POST /mcp (and GET for SSE polling, per the spec).
      * Auth: Authorization: Bearer <token> against HSMCP_BEARER_TOKENS.
-     * Anything else returns 404. /healthz returns 200 OK without auth so
-     * upstream proxies (Traefik, load-balancers) can probe liveness.
+     * /healthz returns 200 OK without auth so upstream proxies (Traefik,
+     * load-balancers) can probe liveness without consuming a token.
+     * Anything else returns 404.
      */
     async startHttp(port) {
         const acceptedTokens = loadAcceptedTokens();
         if (acceptedTokens.size === 0) {
             throw new Error('HSMCP_BEARER_TOKENS must be set (CSV) when MCP_HTTP_PORT is configured');
         }
-        const transport = new StreamableHTTPServerTransport({
-            // Stateless: agents will reconnect cleanly on each heartbeat
-            sessionIdGenerator: undefined,
-        });
-        await this.server.connect(transport);
+        // Single shared Server instance; per-request transport via handleMcpRequest.
+        const sharedServer = this.server;
+        const handleMcpRequest = async (req, res, parsedBody) => {
+            // New transport per request. SDK enforces this in stateless mode.
+            const transport = new StreamableHTTPServerTransport({
+                sessionIdGenerator: undefined,
+            });
+            // Close transport (and its in-flight resources) when the response ends,
+            // covering normal completion AND client disconnect mid-stream.
+            res.on('close', () => {
+                transport.close().catch(() => { });
+            });
+            await sharedServer.connect(transport);
+            await transport.handleRequest(req, res, parsedBody);
+        };
         const httpServer = createHttpServer(async (req, res) => {
             try {
-                // Liveness probe — no auth, fixed response
                 if (req.method === 'GET' && req.url === '/healthz') {
                     res.statusCode = 200;
                     res.setHeader('content-type', 'application/json');
                     res.end(JSON.stringify({ status: 'ok', inboxes: this.discoveredInboxes.length }));
                     return;
                 }
-                // Everything else must be on /mcp with valid bearer
                 if (!req.url || !req.url.startsWith('/mcp')) {
                     res.statusCode = 404;
                     res.end('not found');
@@ -278,15 +288,13 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
                 }
                 if (!authorizeRequest(req, res, acceptedTokens))
                     return;
-                // Buffer the body for POST so MCP SDK can parse it. The transport
-                // handles GET (SSE) and DELETE (session close) without a body.
+                let parsed = undefined;
                 if (req.method === 'POST') {
                     const chunks = [];
                     for await (const chunk of req) {
                         chunks.push(chunk);
                     }
                     const raw = Buffer.concat(chunks).toString('utf-8');
-                    let parsed = undefined;
                     if (raw.length > 0) {
                         try {
                             parsed = JSON.parse(raw);
@@ -298,18 +306,17 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
                             return;
                         }
                     }
-                    await transport.handleRequest(req, res, parsed);
                 }
-                else {
-                    await transport.handleRequest(req, res);
-                }
+                await handleMcpRequest(req, res, parsed);
             }
             catch (err) {
-                logger.error('HTTP request error', { error: err instanceof Error ? err.message : String(err) });
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                const stack = err instanceof Error ? err.stack : undefined;
+                logger.error('HTTP request error', { error: errorMessage, stack });
                 if (!res.headersSent) {
                     res.statusCode = 500;
                     res.setHeader('content-type', 'application/json');
-                    res.end(JSON.stringify({ error: 'internal_error' }));
+                    res.end(JSON.stringify({ error: 'internal_error', message: errorMessage }));
                 }
             }
         });
