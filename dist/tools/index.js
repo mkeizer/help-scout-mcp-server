@@ -2058,6 +2058,25 @@ export class ToolHandler {
         if (input.assignTo !== undefined)
             body.assignTo = input.assignTo;
         const { locationId } = await helpScoutClient.postWithLocation('/conversations', body);
+        // Follow-up GET to fetch the human-readable HS# ticket number — Location
+        // header only carries the internal conv_id (e.g. 3312878381). Agents need
+        // both: conversationId for /conversation/<id>/ URLs, conversationNumber
+        // (HS#1291893-style) for `pcp-link-hs.sh`, customer references, and
+        // anything that quotes the ticket. Without this an agent gets the conv_id
+        // and then drifts for minutes searching the inbox for "the right HS#".
+        let conversationNumber = null;
+        if (locationId) {
+            try {
+                const detail = await helpScoutClient.get(`/conversations/${locationId}`);
+                conversationNumber = detail.number ?? null;
+            }
+            catch (e) {
+                logger.warn('createConversation: follow-up GET for number failed', {
+                    locationId,
+                    error: e instanceof Error ? e.message : String(e),
+                });
+            }
+        }
         return {
             content: [{
                     type: 'text',
@@ -2067,10 +2086,17 @@ export class ToolHandler {
                         customer: input.customer,
                         subject: input.subject,
                         conversationId: locationId,
-                        conversationUrl: locationId ? `https://secure.helpscout.net/conversation/${locationId}` : null,
+                        conversationNumber,
+                        conversationUrl: locationId
+                            ? `https://secure.helpscout.net/conversation/${locationId}${conversationNumber ? `/${conversationNumber}` : ''}`
+                            : null,
+                        hsTicketReference: conversationNumber ? `HS#${conversationNumber}` : null,
                         message: input.draft
-                            ? `New draft conversation created (id ${locationId ?? '?'}). Review and send it from the Help Scout UI.`
-                            : `New conversation created (id ${locationId ?? '?'}) and sent to customer.`,
+                            ? `New draft conversation created (HS#${conversationNumber ?? '?'} / id ${locationId ?? '?'}). Review and send it from the Help Scout UI.`
+                            : `New conversation created (HS#${conversationNumber ?? '?'} / id ${locationId ?? '?'}) and sent to customer.`,
+                        nextStep: conversationNumber
+                            ? `Run \`scripts/pcp-link-hs.sh <KEU-issue-id> ${conversationNumber} ${locationId}\` to bidirectionally link the draft to the Paperclip issue.`
+                            : null,
                     }, null, 2),
                 }],
         };
