@@ -349,6 +349,24 @@ export class HelpScoutClient {
         }
         return response.data;
     }
+    // POST that also exposes the Location header — Help Scout returns the new
+    // resource id as the trailing path segment of the Location header on 201
+    // creations (e.g. `/v2/conversations/3312175857`). Without this, agents
+    // calling createConversation can't link the draft back to a Paperclip
+    // issue and waste minutes searching the inbox for it (KEU-357 friction).
+    async postWithLocation(endpoint, data) {
+        const response = await this.executeWithRetry(() => this.client.post(endpoint, data));
+        if (response.status >= 400) {
+            throw this.transformError(Object.assign(new Error(`Request failed with status ${response.status}`), {
+                response,
+                config: response.config,
+                isAxiosError: true,
+            }));
+        }
+        const loc = (response.headers?.location || response.headers?.Location || '');
+        const locationId = loc ? loc.split('/').filter(Boolean).pop() || null : null;
+        return { data: response.data, locationId };
+    }
     async put(endpoint, data) {
         const response = await this.executeWithRetry(() => this.client.put(endpoint, data));
         if (response.status >= 400) {

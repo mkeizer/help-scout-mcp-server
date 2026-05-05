@@ -121,6 +121,95 @@ export function resolveAttachmentFormat(
   return textRatio >= 0.9 ? 'text' : 'base64';
 }
 
+/**
+ * Universal "always-wrong" customer-mail format rules. Throws if any rule
+ * is violated. Spacing rule (≥4 <br><br>) is intentionally NOT enforced
+ * here — context-dependent (long outbound vs short ack reply); that stays
+ * a soft skill-level gate.
+ *
+ * Incident reference (KEU-208 / 2026-05-04): HoS wrote a flitsverkoop.nl
+ * customer mail directly via createConversation, bypassing Support Rep skill
+ * and its pre-send gate. The mail had em-dash + "Met vriendelijke groet"
+ * signature + multiple other format violations. To prevent recurrence,
+ * these rules now run server-side regardless of which agent calls the API.
+ */
+function enforceCustomerMailFormatRules(text: string, tool: string): void {
+  const errors: string[] = [];
+  const body = text || '';
+  const bodyLower = body.toLowerCase();
+
+  // 1. No em-dash
+  if (body.includes('—')) {
+    errors.push("em-dash (—) present — use comma, period, or rephrase");
+  }
+
+  // 2. No forbidden signature/closing phrases (HS auto-appends signature)
+  const forbidden = ['met vriendelijke groet', 'mocht je verder vragen', 'het keurigonline team', 'keurigonline support'];
+  for (const phrase of forbidden) {
+    if (bodyLower.includes(phrase)) {
+      errors.push(`forbidden phrase: "${phrase}" — Help Scout appends the signature automatically`);
+    }
+  }
+
+  // 3. No <p> tags (we use <br><br>)
+  if (/<\/?p[\s>]/i.test(body)) {
+    errors.push("<p> tag present — replies use <br><br>, not <p>");
+  }
+
+  // 4. No markdown bold (use <strong>)
+  if (/\*\*[^*]+\*\*/.test(body)) {
+    errors.push("markdown **bold** present — use <strong>...</strong>");
+  }
+
+  // 5. No u-form (KO is je-vorm)
+  for (const u of [' u ', ' u,', ' u.', ' uw ']) {
+    if (bodyLower.includes(u)) {
+      errors.push(`u-form usage detected (${JSON.stringify(u.trim())}) — KO is je-vorm`);
+      break;
+    }
+  }
+
+  // 6. No 'Softaculous' — KO uses Installatron. Softaculous in a KO customer
+  //    mail is almost always a hallucination ("ga naar Softaculous" while we
+  //    actually have Installatron). Other product names (cPanel, Plesk,
+  //    JetBackup, WHM) are legitimately mentionable in migration / prior-host
+  //    context, so they're NOT in this hard block — those stay a skill-level
+  //    soft check via memory/feedback_forbidden_products_and_labels.md.
+  if (/\bsoftaculous\b/i.test(body)) {
+    errors.push("forbidden product name 'softaculous' — KO uses Installatron. If you're describing a customer's prior host, rephrase to make that explicit.");
+  }
+
+  // 7. No English labels in NL copy
+  const labelPairs: [RegExp, string, string][] = [
+    [/\bPackage\b/, 'Package', 'Pakket'],
+    [/\bAccount Settings\b/, 'Account Settings', 'Accountinstellingen'],
+    [/\bBackup\b/, 'Backup', 'Back-up'],
+    [/\bStorage\b/, 'Storage', 'Schijfruimte'],
+    [/\bRenewal\b/, 'Renewal', 'Verlenging'],
+    [/\bSubscription\b/, 'Subscription', 'Abonnement'],
+  ];
+  for (const [pat, en, nl] of labelPairs) {
+    if (pat.test(body)) {
+      errors.push(`English label '${en}' in NL copy — use '${nl}'`);
+    }
+  }
+
+  // 8. No <h1>-<h6> tags (skills use <strong> for emphasis, never headings — they break HS's email rendering)
+  if (/<h[1-6][\s>]/i.test(body)) {
+    errors.push("<h1>-<h6> heading tag present — use <strong>...</strong> for emphasis, headings break HS rendering");
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `${tool}: BLOCKED by server format policy. Fix these before retrying:\n` +
+      errors.map(e => `  - ${e}`).join('\n') +
+      `\n(See memory/feedback_forbidden_products_and_labels.md and skill pre-send gate. ` +
+      `If using a Support Rep outbound/reply skill, the Step 4 gate should have caught this — ` +
+      `you may have skipped that step or are calling from outside the skill.)`
+    );
+  }
+}
+
 export class ToolHandler {
   private callHistory: string[] = [];
   private currentUserQuery?: string;
@@ -2211,6 +2300,27 @@ export class ToolHandler {
   private async createConversation(args: unknown): Promise<CallToolResult> {
     const input = CreateConversationInputSchema.parse(args);
 
+    // Hard mechanical backstop: this MCP server is configured for an
+    // agent-orchestrated pipeline where ONLY the human sends customer mail.
+    // Any attempt to create an outbound conversation that is NOT a draft is
+    // rejected here, regardless of what an agent's instructions say.
+    // (Recurrence-prevention for the 2026-05-04 incident: 5 mails sent by
+    //  HoS via createConversation with draft:false. Agent rule was changed,
+    //  but rule-only is a single point of failure — this is the floor.)
+    if (input.draft !== true) {
+      throw new Error(
+        'createConversation: draft:false is BLOCKED by server policy. ' +
+        'All outbound conversations must be drafts (`draft: true`); a human sends from the Help Scout UI. ' +
+        'If you believe an exception is warranted, escalate to the human via a Paperclip issue comment ' +
+        'with "READY FOR MAARTEN TO SEND" and leave the draft in place. Never bypass this.'
+      );
+    }
+
+    // Format gate (always-wrong rules — incident KEU-208 / 2026-05-04: HoS
+    // wrote a customer mail directly bypassing Support Rep skill, which carries
+    // the pre-send gate. These rules apply universally regardless of agent.
+    enforceCustomerMailFormatRules(input.text, 'createConversation');
+
     const thread: Record<string, unknown> = {
       type: input.draft ? 'reply' : 'reply',
       customer: { email: input.customer },
@@ -2231,7 +2341,7 @@ export class ToolHandler {
     if (input.tags) body.tags = input.tags;
     if (input.assignTo !== undefined) body.assignTo = input.assignTo;
 
-    await helpScoutClient.post('/conversations', body);
+    const { locationId } = await helpScoutClient.postWithLocation('/conversations', body);
 
     return {
       content: [{
@@ -2241,9 +2351,11 @@ export class ToolHandler {
           action: input.draft ? 'draft_conversation_created' : 'conversation_created',
           customer: input.customer,
           subject: input.subject,
+          conversationId: locationId,
+          conversationUrl: locationId ? `https://secure.helpscout.net/conversation/${locationId}` : null,
           message: input.draft
-            ? 'New draft conversation created. Review and send it from the Help Scout UI.'
-            : 'New conversation created and sent to customer.',
+            ? `New draft conversation created (id ${locationId ?? '?'}). Review and send it from the Help Scout UI.`
+            : `New conversation created (id ${locationId ?? '?'}) and sent to customer.`,
         }, null, 2),
       }],
     };
@@ -2251,6 +2363,21 @@ export class ToolHandler {
 
   private async createReply(args: unknown): Promise<CallToolResult> {
     const input = CreateReplyInputSchema.parse(args);
+
+    // Hard mechanical backstop — see createConversation above. Drafts only.
+    // The HS API treats `draft:false` (or omission) as send-immediately. We
+    // reject both at the server boundary so no agent rule-drift can bypass.
+    if (input.draft !== true) {
+      throw new Error(
+        'createReply: draft:false (or omitted) is BLOCKED by server policy. ' +
+        'All replies must be drafts (`draft: true`); a human sends from the Help Scout UI. ' +
+        'If you believe an exception is warranted, leave the draft in place and add a Paperclip ' +
+        'issue comment "READY FOR MAARTEN TO SEND". Never bypass this.'
+      );
+    }
+
+    // Format gate — see createConversation above.
+    enforceCustomerMailFormatRules(input.text, 'createReply');
 
     const body: Record<string, unknown> = {
       customer: { email: input.customer },
@@ -2284,9 +2411,35 @@ export class ToolHandler {
   private async createNote(args: unknown): Promise<CallToolResult> {
     const input = CreateNoteInputSchema.parse(args);
 
+    // Auto-correction 1: agents repeatedly send pre-escaped HTML entities
+    // (`&lt;p&gt;` instead of `<p>`) thinking they need to escape for JSON
+    // transport. JSON encoding is already handled by the MCP layer. If we
+    // detect double-escaping, decode it back to raw HTML before sending.
+    // Reference incident: KEU-209 / 2026-05-05 / HS#1291696 — HoO sent
+    // `&lt;p&gt;&lt;strong&gt;[HoO – Imunify Triage]&lt;/strong&gt;...` and
+    // HS rendered the entities as literal text in the note.
+    let noteText = input.text;
+    const escapedTagPattern = /&lt;\/?(?:p|strong|em|br|ul|ol|li|code|pre|a|h[1-6]|div|span)\b/i;
+    if (escapedTagPattern.test(noteText)) {
+      noteText = noteText
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, '&');  // last to avoid double-decoding
+    }
+
+    // Auto-correction 2: nl2br-style blank-line preservation. HS notes don't
+    // add margin between consecutive <p> blocks — agents typically write
+    // `</p>\n\n<p>` expecting visual spacing. Inject <br/> between any pair
+    // of block elements separated by ≥1 blank line so the rendered note has
+    // the spacing the author intended. Reference: KEU-209 / 2026-05-05 user
+    // feedback "nu mis ik nog wel de enter rules — nl2br zeg maar".
+    noteText = noteText.replace(/\n[ \t]*\n+/g, '\n<br/>\n');
+
     await helpScoutClient.post(
       `/conversations/${input.conversationId}/notes`,
-      { text: input.text }
+      { text: noteText }
     );
 
     return {

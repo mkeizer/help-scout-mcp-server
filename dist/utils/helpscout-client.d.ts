@@ -65,6 +65,10 @@ export declare class HelpScoutClient {
     }): Promise<T>;
     private getDefaultCacheTtl;
     post<T>(endpoint: string, data: Record<string, unknown>): Promise<T>;
+    postWithLocation<T>(endpoint: string, data: Record<string, unknown>): Promise<{
+        data: T;
+        locationId: string | null;
+    }>;
     put<T>(endpoint: string, data: Record<string, unknown>): Promise<T>;
     patch<T>(endpoint: string, data: Record<string, unknown>): Promise<T>;
     testConnection(): Promise<boolean>;

@@ -2057,7 +2057,7 @@ export class ToolHandler {
             body.tags = input.tags;
         if (input.assignTo !== undefined)
             body.assignTo = input.assignTo;
-        await helpScoutClient.post('/conversations', body);
+        const { locationId } = await helpScoutClient.postWithLocation('/conversations', body);
         return {
             content: [{
                     type: 'text',
@@ -2066,9 +2066,11 @@ export class ToolHandler {
                         action: input.draft ? 'draft_conversation_created' : 'conversation_created',
                         customer: input.customer,
                         subject: input.subject,
+                        conversationId: locationId,
+                        conversationUrl: locationId ? `https://secure.helpscout.net/conversation/${locationId}` : null,
                         message: input.draft
-                            ? 'New draft conversation created. Review and send it from the Help Scout UI.'
-                            : 'New conversation created and sent to customer.',
+                            ? `New draft conversation created (id ${locationId ?? '?'}). Review and send it from the Help Scout UI.`
+                            : `New conversation created (id ${locationId ?? '?'}) and sent to customer.`,
                     }, null, 2),
                 }],
         };
