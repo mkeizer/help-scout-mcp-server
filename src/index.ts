@@ -29,8 +29,24 @@ export class HelpScoutMCPServer {
    * Private constructor - use static `create()` factory method instead.
    * This enables async inbox discovery before server instantiation.
    */
+  // Cached so HTTP mode can construct a fresh Server per request without
+  // re-running the async inbox-discovery (it's already done once at boot).
+  private cachedInstructions: string;
+
   private constructor(instructions: string) {
-    this.server = new Server(
+    this.cachedInstructions = instructions;
+    this.server = this.buildServer();
+  }
+
+  /**
+   * Builds a fresh Server instance with all request handlers wired up.
+   * Used both at startup (for stdio mode) and per-request in HTTP mode —
+   * SDK forbids reusing one Server across multiple transports, so HTTP mode
+   * spins up a new Server (cheap: just hash-map handler registration) per
+   * incoming request alongside its own StreamableHTTPServerTransport.
+   */
+  private buildServer(): Server {
+    const server = new Server(
       {
         name: 'helpscout-search',
         version: '1.7.0',
@@ -41,11 +57,11 @@ export class HelpScoutMCPServer {
           tools: {},
           prompts: {},
         },
-        instructions,
-      }
+        instructions: this.cachedInstructions,
+      },
     );
-
-    this.setupHandlers();
+    this.setupHandlersOn(server);
+    return server;
   }
 
   /**
@@ -151,9 +167,9 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
     }
   }
 
-  private setupHandlers(): void {
+  private setupHandlersOn(server: Server): void {
     // Resources
-    this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
       logger.debug('Listing resources');
       try {
         return {
@@ -165,7 +181,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
       }
     });
 
-    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       logger.debug('Reading resource', { uri: request.params.uri });
       const resource = await resourceHandler.handleResource(request.params.uri);
       return {
@@ -174,7 +190,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
     });
 
     // Tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
       logger.debug('Listing tools');
       try {
         return {
@@ -186,7 +202,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
       }
     });
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
       logger.debug('Calling tool', { 
         name: request.params.name, 
         arguments: request.params.arguments 
@@ -195,7 +211,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
     });
 
     // Prompts
-    this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
+    server.setRequestHandler(ListPromptsRequestSchema, async () => {
       logger.debug('Listing prompts');
       try {
         return {
@@ -207,7 +223,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
       }
     });
 
-    this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       logger.debug('Getting prompt', { 
         name: request.params.name, 
         arguments: request.params.arguments 
@@ -286,24 +302,23 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
       throw new Error('HSMCP_BEARER_TOKENS must be set (CSV) when MCP_HTTP_PORT is configured');
     }
 
-    // Single shared Server instance; per-request transport via handleMcpRequest.
-    const sharedServer = this.server;
-
     const handleMcpRequest = async (
       req: IncomingMessage,
       res: ServerResponse,
       parsedBody: unknown,
     ): Promise<void> => {
-      // New transport per request. SDK enforces this in stateless mode.
+      // SDK forbids reusing both a Server AND a transport across requests
+      // in stateless mode. Build fresh of both per request — handler
+      // registration is just hash-map setRequestHandler calls (cheap).
+      const reqServer = this.buildServer();
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
-      // Close transport (and its in-flight resources) when the response ends,
-      // covering normal completion AND client disconnect mid-stream.
       res.on('close', () => {
         transport.close().catch(() => { /* ignore */ });
+        reqServer.close().catch(() => { /* ignore */ });
       });
-      await sharedServer.connect(transport);
+      await reqServer.connect(transport);
       await transport.handleRequest(req, res, parsedBody);
     };
 

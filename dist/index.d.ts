@@ -6,7 +6,16 @@ export declare class HelpScoutMCPServer {
      * Private constructor - use static `create()` factory method instead.
      * This enables async inbox discovery before server instantiation.
      */
+    private cachedInstructions;
     private constructor();
+    /**
+     * Builds a fresh Server instance with all request handlers wired up.
+     * Used both at startup (for stdio mode) and per-request in HTTP mode —
+     * SDK forbids reusing one Server across multiple transports, so HTTP mode
+     * spins up a new Server (cheap: just hash-map handler registration) per
+     * incoming request alongside its own StreamableHTTPServerTransport.
+     */
+    private buildServer;
     /**
      * Async factory method for creating the MCP server.
      * Discovers available inboxes and builds dynamic instructions before server creation.
@@ -17,7 +26,7 @@ export declare class HelpScoutMCPServer {
      * Called once during server creation to populate instructions sent to MCP clients.
      */
     private static discoverAndBuildInstructions;
-    private setupHandlers;
+    private setupHandlersOn;
     start(): Promise<void>;
     /**
      * Start in HTTP mode behind a reverse proxy. Stateless StreamableHTTP:
