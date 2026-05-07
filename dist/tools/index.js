@@ -103,6 +103,19 @@ function enforceCustomerMailFormatRules(text, tool) {
             errors.push(`forbidden phrase: "${phrase}" — Help Scout appends the signature automatically`);
         }
     }
+    // 2b. Personal-name signature pattern: "Groet,\n<Name>" or "Mvg,\n<Name>" at
+    // end of body. Caught via HS#1291643 / 2026-05-06: koos-account agent ended
+    // a draft with "Groet,\n\nMaarten". HS appends the colleague-signature
+    // already; agents adding their own name = double sig + wrong-person
+    // attribution risk (klant ziet "Groet, Maarten" terwijl Wouter de mail
+    // uiteindelijk verstuurt).
+    const sigPattern = /(groet|groetjes|mvg|m\.?v\.?g\.?)[,.]?\s*(<br\s*\/?>\s*){0,4}\s*(maarten|wouter|ewoud|pablo|koos)\b/i;
+    const sigHit = body.match(sigPattern);
+    if (sigHit) {
+        errors.push(`personal-name signature detected (${sigHit[0].replace(/\s+/g, ' ').slice(0, 60)}...) — ` +
+            `HS appends the colleague-signature automatically. Drop the closing line entirely; ` +
+            `the staff member who clicks 'Send' is who the customer sees as sender.`);
+    }
     // 3. No <p> tags (we use <br><br>)
     if (/<\/?p[\s>]/i.test(body)) {
         errors.push("<p> tag present — replies use <br><br>, not <p>");
@@ -2031,14 +2044,29 @@ export class ToolHandler {
                 'If you believe an exception is warranted, escalate to the human via a Paperclip issue comment ' +
                 'with "READY FOR MAARTEN TO SEND" and leave the draft in place. Never bypass this.');
         }
+        // Auto-correction: HTML-entity-pre-escaped tags. Same pattern as createNote
+        // and createReply (KEU-209 / HS#1291643 incidents). Agents send `&lt;br&gt;`
+        // thinking they need to escape for JSON; HS renders it as literal text.
+        let convText = input.text;
+        const escapedTagPattern = /&lt;\/?(?:p|strong|em|br|ul|ol|li|code|pre|a|h[1-6]|div|span)\b/i;
+        if (escapedTagPattern.test(convText)) {
+            logger.warn('createConversation: auto-decoding HTML entities in body (agent pre-escaped tags)');
+            convText = convText
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/&amp;/g, '&');
+        }
         // Format gate (always-wrong rules — incident KEU-208 / 2026-05-04: HoS
         // wrote a customer mail directly bypassing Support Rep skill, which carries
         // the pre-send gate. These rules apply universally regardless of agent.
-        enforceCustomerMailFormatRules(input.text, 'createConversation');
+        // Run AFTER entity-decode so gate sees rendered HTML.
+        enforceCustomerMailFormatRules(convText, 'createConversation');
         const thread = {
             type: input.draft ? 'reply' : 'reply',
             customer: { email: input.customer },
-            text: input.text,
+            text: convText,
             draft: input.draft,
         };
         if (input.cc)
@@ -2112,11 +2140,30 @@ export class ToolHandler {
                 'If you believe an exception is warranted, leave the draft in place and add a Paperclip ' +
                 'issue comment "READY FOR MAARTEN TO SEND". Never bypass this.');
         }
-        // Format gate — see createConversation above.
-        enforceCustomerMailFormatRules(input.text, 'createReply');
+        // Auto-correction: HTML-entity-pre-escaped tags. Same pattern as createNote
+        // (KEU-209 incident). Agents repeatedly send `&lt;br&gt;` thinking they
+        // need to escape for JSON transport — JSON encoding is already handled by
+        // the MCP layer. HS then renders `&lt;br&gt;` as literal text, customer
+        // sees garbage.
+        // Reference incident KEU-X / 2026-05-06 (HS#1291643): koos-account agent
+        // sent a draft with `&lt;br&gt;&lt;br&gt;` + `&lt;strong&gt;` throughout.
+        let replyText = input.text;
+        const escapedTagPattern = /&lt;\/?(?:p|strong|em|br|ul|ol|li|code|pre|a|h[1-6]|div|span)\b/i;
+        if (escapedTagPattern.test(replyText)) {
+            logger.warn('createReply: auto-decoding HTML entities in body (agent pre-escaped tags)');
+            replyText = replyText
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/&amp;/g, '&');
+        }
+        // Format gate — see createConversation above. Run AFTER entity-decode so
+        // the gate sees the actual rendered HTML, not the escaped version.
+        enforceCustomerMailFormatRules(replyText, 'createReply');
         const body = {
             customer: { email: input.customer },
-            text: input.text,
+            text: replyText,
             draft: input.draft,
         };
         if (input.status)
