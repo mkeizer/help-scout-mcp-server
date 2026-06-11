@@ -51,11 +51,14 @@ async function readJsonBody(req) {
     return JSON.parse(raw);
 }
 // ── metadata-endpoints ─────────────────────────────────────────────────────
+function enabledScopes() {
+    return saasConfig.allowWriteScope ? [...SCOPES] : ['read'];
+}
 export function protectedResourceMetadata() {
     return {
         resource: saasConfig.publicBaseUrl,
         authorization_servers: [saasConfig.publicBaseUrl],
-        scopes_supported: [...SCOPES],
+        scopes_supported: enabledScopes(),
         bearer_methods_supported: ['header'],
     };
 }
@@ -71,7 +74,7 @@ export function authorizationServerMetadata() {
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['none'],
-        scopes_supported: [...SCOPES],
+        scopes_supported: enabledScopes(),
     };
 }
 // ── route-afhandeling ──────────────────────────────────────────────────────
@@ -156,7 +159,13 @@ function handleAuthorize(url, res) {
     const state = q.get('state') || '';
     const codeChallenge = q.get('code_challenge') || '';
     const challengeMethod = q.get('code_challenge_method') || '';
-    const scope = (q.get('scope') || 'read').split(/[\s+]+/).filter(s => SCOPES.includes(s)).join(' ') || 'read';
+    // Downscopen i.p.v. afwijzen: clients (claude.ai) vragen vaak alle
+    // geadverteerde scopes aan; wij kennen het toegestane deel toe en melden
+    // dat in het token-antwoord (RFC 6749 §3.3 staat smaller toekennen toe).
+    const scope = (q.get('scope') || 'read')
+        .split(/[\s+]+/)
+        .filter(s => enabledScopes().includes(s))
+        .join(' ') || 'read';
     const client = getClient(clientId);
     if (!client) {
         sendHtml(res, 400, '<h2>Unknown client</h2><p>This MCP client is not registered.</p>');
@@ -169,10 +178,6 @@ function handleAuthorize(url, res) {
     }
     if (challengeMethod !== 'S256' || !codeChallenge) {
         redirect(res, `${redirectUri}?error=invalid_request&error_description=${encodeURIComponent('PKCE S256 required')}${state ? `&state=${encodeURIComponent(state)}` : ''}`);
-        return;
-    }
-    if (scope.includes('write') && !saasConfig.allowWriteScope) {
-        redirect(res, `${redirectUri}?error=invalid_scope&error_description=${encodeURIComponent('write scope is not enabled on this server')}${state ? `&state=${encodeURIComponent(state)}` : ''}`);
         return;
     }
     const hsState = randomBytes(16).toString('hex');

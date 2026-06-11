@@ -63,11 +63,15 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 
 // ── metadata-endpoints ─────────────────────────────────────────────────────
 
+function enabledScopes(): string[] {
+  return saasConfig.allowWriteScope ? [...SCOPES] : ['read'];
+}
+
 export function protectedResourceMetadata(): Record<string, unknown> {
   return {
     resource: saasConfig.publicBaseUrl,
     authorization_servers: [saasConfig.publicBaseUrl],
-    scopes_supported: [...SCOPES],
+    scopes_supported: enabledScopes(),
     bearer_methods_supported: ['header'],
   };
 }
@@ -84,7 +88,7 @@ export function authorizationServerMetadata(): Record<string, unknown> {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: [...SCOPES],
+    scopes_supported: enabledScopes(),
   };
 }
 
@@ -172,7 +176,13 @@ function handleAuthorize(url: URL, res: ServerResponse): void {
   const state = q.get('state') || '';
   const codeChallenge = q.get('code_challenge') || '';
   const challengeMethod = q.get('code_challenge_method') || '';
-  const scope = (q.get('scope') || 'read').split(/[\s+]+/).filter(s => (SCOPES as readonly string[]).includes(s)).join(' ') || 'read';
+  // Downscopen i.p.v. afwijzen: clients (claude.ai) vragen vaak alle
+  // geadverteerde scopes aan; wij kennen het toegestane deel toe en melden
+  // dat in het token-antwoord (RFC 6749 §3.3 staat smaller toekennen toe).
+  const scope = (q.get('scope') || 'read')
+    .split(/[\s+]+/)
+    .filter(s => enabledScopes().includes(s))
+    .join(' ') || 'read';
 
   const client = getClient(clientId);
   if (!client) {
@@ -188,11 +198,6 @@ function handleAuthorize(url: URL, res: ServerResponse): void {
     redirect(res, `${redirectUri}?error=invalid_request&error_description=${encodeURIComponent('PKCE S256 required')}${state ? `&state=${encodeURIComponent(state)}` : ''}`);
     return;
   }
-  if (scope.includes('write') && !saasConfig.allowWriteScope) {
-    redirect(res, `${redirectUri}?error=invalid_scope&error_description=${encodeURIComponent('write scope is not enabled on this server')}${state ? `&state=${encodeURIComponent(state)}` : ''}`);
-    return;
-  }
-
   const hsState = randomBytes(16).toString('hex');
   saveFlowState(hsState, { clientId, redirectUri, state, codeChallenge, scope });
   redirect(res, buildHsAuthorizeUrl(hsState));
