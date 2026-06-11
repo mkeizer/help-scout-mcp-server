@@ -15,7 +15,7 @@ const DEFAULT_POOL_CONFIG = {
     keepAliveMsecs: 1000, // Keep-alive probe interval
 };
 export class HelpScoutClient {
-    constructor(poolConfig = {}) {
+    constructor(poolConfig = {}, options = {}) {
         this.accessToken = null;
         this.tokenExpiresAt = 0;
         this.authenticationPromise = null;
@@ -31,6 +31,8 @@ export class HelpScoutClient {
                     error.response.status === 429; // Rate limits
             }
         };
+        this.tokenProvider = options.tokenProvider;
+        this.cacheNamespace = options.cacheNamespace || 'global';
         // Merge default pool config with any custom settings
         const finalPoolConfig = { ...DEFAULT_POOL_CONFIG, ...poolConfig };
         // Create HTTP agents with connection pooling
@@ -165,6 +167,25 @@ export class HelpScoutClient {
         });
     }
     async ensureAuthenticated() {
+        // SaaS-mode: token komt per user uit de provider (die zelf refresht).
+        // Korte lokale cache (30s) om de store niet per request te raken.
+        if (this.tokenProvider) {
+            if (this.accessToken && Date.now() < this.tokenExpiresAt) {
+                return;
+            }
+            const token = await this.tokenProvider();
+            if (!token) {
+                const err = {
+                    code: 'UNAUTHORIZED',
+                    message: 'Help Scout link is no longer valid. Re-connect your Help Scout account.',
+                    details: { suggestion: 'Remove and re-add this MCP connector to re-link Help Scout.' },
+                };
+                throw err;
+            }
+            this.accessToken = token;
+            this.tokenExpiresAt = Date.now() + 30000;
+            return;
+        }
         // Check if token is still valid
         if (this.accessToken && Date.now() < this.tokenExpiresAt) {
             return;
@@ -313,7 +334,9 @@ export class HelpScoutClient {
         };
     }
     async get(endpoint, params, cacheOptions) {
-        const cacheKey = `GET:${endpoint}`;
+        // Namespace per tenant — zonder dit zou de gedeelde LRU data van de ene
+        // gebruiker aan de andere kunnen serveren.
+        const cacheKey = `${this.cacheNamespace}:GET:${endpoint}`;
         const cachedResult = cache.get(cacheKey, params);
         if (cachedResult) {
             return cachedResult;
@@ -464,5 +487,17 @@ export class HelpScoutClient {
     }
 }
 // Create client instance with connection pool config from environment
-export const helpScoutClient = new HelpScoutClient(config.connectionPool);
+const singletonClient = new HelpScoutClient(config.connectionPool);
+// In SaaS-mode draait elke MCP-request binnen requestContext.run() met een
+// per-user client. Deze Proxy laat alle bestaande importeurs (tools, reports,
+// resources) ongewijzigd: buiten een context delegeert hij naar de singleton.
+import { requestContext } from '../saas/als.js';
+export const helpScoutClient = new Proxy(singletonClient, {
+    get(target, prop, _receiver) {
+        const ctx = requestContext.getStore();
+        const active = ctx?.client ?? target;
+        const value = Reflect.get(active, prop, active);
+        return typeof value === 'function' ? value.bind(active) : value;
+    },
+});
 //# sourceMappingURL=helpscout-client.js.map

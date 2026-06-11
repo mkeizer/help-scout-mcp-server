@@ -44,6 +44,16 @@ export interface PaginatedResponse<T> {
         number: number;
     };
 }
+export interface HelpScoutClientOptions {
+    /**
+     * SaaS-mode: levert een geldig per-user access-token (met eigen refresh-
+     * logica), of null als de koppeling is ingetrokken. Wanneer gezet wordt de
+     * client_credentials-flow volledig overgeslagen.
+     */
+    tokenProvider?: () => Promise<string | null>;
+    /** Scheidt cache-entries per tenant. Default 'global' (singleton). */
+    cacheNamespace?: string;
+}
 export declare class HelpScoutClient {
     private client;
     private accessToken;
@@ -51,8 +61,10 @@ export declare class HelpScoutClient {
     private authenticationPromise;
     private httpAgent;
     private httpsAgent;
+    private tokenProvider?;
+    private cacheNamespace;
     private defaultRetryConfig;
-    constructor(poolConfig?: Partial<ConnectionPoolConfig>);
+    constructor(poolConfig?: Partial<ConnectionPoolConfig>, options?: HelpScoutClientOptions);
     private sleep;
     private calculateRetryDelay;
     private executeWithRetry;

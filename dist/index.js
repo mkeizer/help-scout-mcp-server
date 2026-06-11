@@ -4,13 +4,24 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
 import { createServer as createHttpServer } from 'node:http';
-import { validateConfig } from './utils/config.js';
+import { validateConfig, config } from './utils/config.js';
 import { logger } from './utils/logger.js';
 import { helpScoutClient } from './utils/helpscout-client.js';
 import { resourceHandler } from './resources/index.js';
 import { toolHandler } from './tools/index.js';
 import { promptHandler } from './prompts/index.js';
 import { loadAcceptedTokens, authorizeRequest } from './utils/auth-middleware.js';
+import { saasConfig, validateSaasConfig } from './saas/config.js';
+import { initCrypto } from './saas/crypto.js';
+import { initStore, audit, rateLimitAllow, getUser } from './saas/store.js';
+import { handleOauthRoute, authenticateOauthToken, send401WithResourceMetadata } from './saas/oauth.js';
+import { requestContext, clientForUser } from './saas/context.js';
+/** Tools die alleen met write-scope mogen (en in tools/list verborgen worden zonder die scope). */
+const WRITE_TOOLS = new Set([
+    'createConversation', 'createReply', 'createNote',
+    'updateConversationStatus', 'updateConversationTags',
+    'createDocsArticle', 'updateDocsArticle', 'deleteDocsArticle',
+]);
 export class HelpScoutMCPServer {
     constructor(instructions) {
         this.discoveredInboxes = [];
@@ -159,9 +170,13 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
         server.setRequestHandler(ListToolsRequestSchema, async () => {
             logger.debug('Listing tools');
             try {
-                return {
-                    tools: await toolHandler.listTools(),
-                };
+                let tools = await toolHandler.listTools();
+                // SaaS-gebruikers zonder write-scope krijgen de write-tools niet te zien
+                const ctx = requestContext.getStore();
+                if (ctx && !ctx.scope.split(' ').includes('write')) {
+                    tools = tools.filter(t => !WRITE_TOOLS.has(t.name));
+                }
+                return { tools };
             }
             catch (error) {
                 logger.error('Error listing tools', { error: error instanceof Error ? error.message : String(error) });
@@ -173,7 +188,27 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
                 name: request.params.name,
                 arguments: request.params.arguments
             });
-            return await toolHandler.callTool(request);
+            const ctx = requestContext.getStore();
+            if (ctx && WRITE_TOOLS.has(request.params.name) && !ctx.scope.split(' ').includes('write')) {
+                return {
+                    content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                error: 'insufficient_scope',
+                                message: `Tool "${request.params.name}" requires the write scope; this connection is read-only.`,
+                            }, null, 2),
+                        }],
+                    isError: true,
+                };
+            }
+            const started = Date.now();
+            try {
+                return await toolHandler.callTool(request);
+            }
+            finally {
+                if (ctx)
+                    audit(ctx.userId, 'tool_call', request.params.name, Date.now() - started);
+            }
         });
         // Prompts
         server.setRequestHandler(ListPromptsRequestSchema, async () => {
@@ -198,12 +233,21 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
     }
     async start() {
         try {
+            // Pure-SaaS-deployment (geen singleton-credentials in env): sla de
+            // client_credentials-validatie en de boot-connectietest over — elke
+            // gebruiker brengt zijn eigen Help Scout-koppeling mee.
+            const pureSaas = saasConfig.enabled && !config.helpscout.clientSecret;
             // Validate configuration
-            validateConfig();
-            logger.info('Configuration validated');
+            if (!pureSaas) {
+                validateConfig();
+                logger.info('Configuration validated');
+            }
+            else {
+                logger.info('Pure-SaaS mode: singleton Help Scout credentials absent, skipping validation');
+            }
             // Test Help Scout connection only if inbox discovery failed
             // (successful inbox discovery already proves connection works)
-            if (this.discoveredInboxes.length === 0) {
+            if (!pureSaas && this.discoveredInboxes.length === 0) {
                 try {
                     const isConnected = await helpScoutClient.testConnection();
                     if (!isConnected) {
@@ -263,8 +307,20 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
      */
     async startHttp(port) {
         const acceptedTokens = loadAcceptedTokens();
-        if (acceptedTokens.size === 0) {
-            throw new Error('HSMCP_BEARER_TOKENS must be set (CSV) when MCP_HTTP_PORT is configured');
+        if (acceptedTokens.size === 0 && !saasConfig.enabled) {
+            throw new Error('HSMCP_BEARER_TOKENS must be set (CSV) when MCP_HTTP_PORT is configured (or enable HSMCP_SAAS_MODE)');
+        }
+        if (saasConfig.enabled) {
+            validateSaasConfig();
+            initCrypto(saasConfig.saasDir);
+            initStore(saasConfig.saasDir);
+            logger.info('SaaS mode enabled', {
+                publicBaseUrl: saasConfig.publicBaseUrl,
+                saasDir: saasConfig.saasDir,
+                allowWriteScope: saasConfig.allowWriteScope,
+                allowlistCompanies: saasConfig.allowlist.companies.length,
+                allowlistEmails: saasConfig.allowlist.emails.length,
+            });
         }
         const handleMcpRequest = async (req, res, parsedBody) => {
             // SDK forbids reusing both a Server AND a transport across requests
@@ -289,13 +345,46 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
                     res.end(JSON.stringify({ status: 'ok', inboxes: this.discoveredInboxes.length }));
                     return;
                 }
+                // SaaS: discovery- en OAuth-endpoints (zonder auth, per spec)
+                if (saasConfig.enabled && await handleOauthRoute(req, res))
+                    return;
                 if (!req.url || !req.url.startsWith('/mcp')) {
                     res.statusCode = 404;
                     res.end('not found');
                     return;
                 }
-                if (!authorizeRequest(req, res, acceptedTokens))
-                    return;
+                // Auth: eerst legacy bearer-lijst (interne service-accounts), dan
+                // OAuth-tokens uit de SaaS-laag. OAuth-principal krijgt een per-user
+                // context; legacy callers draaien op de singleton (env-credentials).
+                const authHeader = String(req.headers.authorization || '');
+                const bearer = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim() || '';
+                let principal = null;
+                if (acceptedTokens.size > 0 && acceptedTokens.has(bearer)) {
+                    principal = null; // legacy mode: singleton-client, volle toegang
+                }
+                else if (saasConfig.enabled) {
+                    principal = authenticateOauthToken(bearer);
+                    if (!principal) {
+                        send401WithResourceMetadata(res);
+                        return;
+                    }
+                    const user = getUser(principal.userId);
+                    if (!user || user.disabled) {
+                        send401WithResourceMetadata(res);
+                        return;
+                    }
+                    if (!rateLimitAllow(principal.userId, saasConfig.rateLimitPerMinute)) {
+                        res.statusCode = 429;
+                        res.setHeader('content-type', 'application/json');
+                        res.setHeader('retry-after', '60');
+                        res.end(JSON.stringify({ error: 'rate_limited', message: `Limit is ${saasConfig.rateLimitPerMinute} requests/minute.` }));
+                        return;
+                    }
+                }
+                else {
+                    if (!authorizeRequest(req, res, acceptedTokens))
+                        return;
+                }
                 let parsed = undefined;
                 if (req.method === 'POST') {
                     const chunks = [];
@@ -315,7 +404,12 @@ Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see
                         }
                     }
                 }
-                await handleMcpRequest(req, res, parsed);
+                if (principal) {
+                    await requestContext.run({ client: clientForUser(principal.userId), userId: principal.userId, scope: principal.scope }, () => handleMcpRequest(req, res, parsed));
+                }
+                else {
+                    await handleMcpRequest(req, res, parsed);
+                }
             }
             catch (err) {
                 const errorMessage = err instanceof Error ? err.message : String(err);
