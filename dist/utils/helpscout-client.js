@@ -1,6 +1,10 @@
 import axios from 'axios';
-import { Agent as HttpAgent } from 'http';
+// Default-import i.p.v. named: onder nginx Unit vervangt de unit-http-shim de
+// 'http'-module; Agent zit daar alleen runtime in (object-spread) en is voor
+// de ESM-lexer onzichtbaar als named export. `http.Agent` werkt in beide werelden.
+import http from 'http';
 import { Agent as HttpsAgent } from 'https';
+const HttpAgent = http.Agent;
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { cache } from './cache.js';
