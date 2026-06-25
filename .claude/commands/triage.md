@@ -432,7 +432,7 @@ Final 3: **`wordpress`, `gehackt`, `recurrence-escalated`** — three tags that 
 As the final action, unassign the ticket so it drops out of Koos's todo list and becomes visible to the rest of the team for review and send-off. This must run **after** the tech note, draft reply, and tags are all in place, so the context above the unassign lineitem is complete.
 
 ```bash
-scripts/unassign-conversation.sh <conversation_id>
+~/helper-scripts/unassign-conversation.sh <conversation_id>
 ```
 
 The script does a `PATCH /v2/conversations/{id}` with `{"op":"replace","path":"/assignTo","value":null}`. Expected output: `unassigned: <id>`. Exit 0 on success, 2 on API error.
@@ -647,7 +647,7 @@ Elke regel heeft een voorbeeld-ticket waar dit geld heeft gekost. Ken de regel, 
 ## Important Notes
 
 ### Things the API cannot do
-- **Reassign conversations to a specific user** — must be done manually in Help Scout UI. *Unassigning* (to "Anyone") does work via `scripts/unassign-conversation.sh` — see Step 8.
+- **Reassign conversations to a specific user** — must be done manually in Help Scout UI. *Unassigning* (to "Anyone") does work via `~/helper-scripts/unassign-conversation.sh` — see Step 8.
 - **Set spam status** — close marketing emails instead
 - **Send replies** — always create as draft (`draft: true`) unless explicitly told to send
 - **Combine PATCH ops in one request** — Help Scout rejects a JSON array of ops. Each op (status, assignTo, etc.) must be a separate request.
@@ -658,7 +658,7 @@ Elke regel heeft een voorbeeld-ticket waar dit geld heeft gekost. Ken de regel, 
 - If a ticket is assigned to another human (not Koos), mention it and ask before taking action
 - **Every triage run MUST end in one of these states for the ticket**, otherwise it stays stuck in Koos's queue:
   - `closed` via `updateConversationStatus` (false positive, duplicate, self-resolved) — skip Step 8
-  - `unassigned` via `scripts/unassign-conversation.sh` (normal path — tech note + draft reply + tags, hand back to the team)
+  - `unassigned` via `~/helper-scripts/unassign-conversation.sh` (normal path — tech note + draft reply + tags, hand back to the team)
   - `pending` via `updateConversationStatus` (snoozed / deferred, rare) — still run Step 8 afterwards
   - Never leave it `active + assigned to Koos` after a completed triage. That is the one forbidden end state.
 - Snoozed tickets (from info@keurigonline.nl with "MIGRATIE VEREIST") are internal future jobs — do NOT close them
