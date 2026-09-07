@@ -462,14 +462,26 @@ export declare const GetThreadsInputSchema: z.ZodObject<{
     conversationId: z.ZodString;
     limit: z.ZodDefault<z.ZodNumber>;
     cursor: z.ZodOptional<z.ZodString>;
+    /** Convert HTML bodies to plain text and drop quoted history (5-10× smaller). */
+    stripHtml: z.ZodDefault<z.ZodBoolean>;
+    /** Only threads created at/after this ISO-8601 timestamp. */
+    since: z.ZodOptional<z.ZodString>;
+    /** Keep only the newest N threads (after `since`). */
+    maxThreads: z.ZodOptional<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     conversationId: string;
     limit: number;
+    stripHtml: boolean;
     cursor?: string | undefined;
+    since?: string | undefined;
+    maxThreads?: number | undefined;
 }, {
     conversationId: string;
     limit?: number | undefined;
     cursor?: string | undefined;
+    stripHtml?: boolean | undefined;
+    since?: string | undefined;
+    maxThreads?: number | undefined;
 }>;
 export declare const GetOriginalSourceInputSchema: z.ZodObject<{
     conversationId: z.ZodString;
@@ -668,11 +680,14 @@ export declare const CreateReplyInputSchema: z.ZodObject<{
     status: z.ZodOptional<z.ZodEnum<["active", "closed", "pending"]>>;
     cc: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     bcc: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+    /** When a reply draft already exists: overwrite its text instead of refusing. */
+    replaceExistingDraft: z.ZodDefault<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
     draft: boolean;
     customer: string;
     text: string;
     conversationId: string;
+    replaceExistingDraft: boolean;
     status?: "active" | "pending" | "closed" | undefined;
     cc?: string[] | undefined;
     bcc?: string[] | undefined;
@@ -684,6 +699,20 @@ export declare const CreateReplyInputSchema: z.ZodObject<{
     draft?: boolean | undefined;
     cc?: string[] | undefined;
     bcc?: string[] | undefined;
+    replaceExistingDraft?: boolean | undefined;
+}>;
+export declare const UpdateReplyDraftInputSchema: z.ZodObject<{
+    conversationId: z.ZodString;
+    text: z.ZodString;
+    threadId: z.ZodOptional<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    text: string;
+    conversationId: string;
+    threadId?: string | undefined;
+}, {
+    text: string;
+    conversationId: string;
+    threadId?: string | undefined;
 }>;
 export declare const CreateNoteInputSchema: z.ZodObject<{
     conversationId: z.ZodString;
@@ -1686,6 +1715,7 @@ export type Organization = z.infer<typeof OrganizationSchema>;
 export type SearchInboxesInput = z.infer<typeof SearchInboxesInputSchema>;
 export type SearchConversationsInput = z.infer<typeof SearchConversationsInputSchema>;
 export type GetThreadsInput = z.infer<typeof GetThreadsInputSchema>;
+export type UpdateReplyDraftInput = z.infer<typeof UpdateReplyDraftInputSchema>;
 export type GetConversationSummaryInput = z.infer<typeof GetConversationSummaryInputSchema>;
 export type AdvancedConversationSearchInput = z.infer<typeof AdvancedConversationSearchInputSchema>;
 export type MultiStatusConversationSearchInput = z.infer<typeof MultiStatusConversationSearchInputSchema>;

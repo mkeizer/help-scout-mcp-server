@@ -133,6 +133,12 @@ export const GetThreadsInputSchema = z.object({
   conversationId: z.string().regex(/^\d+$/, 'Conversation ID must be numeric'),
   limit: z.number().min(1).max(200).default(200),
   cursor: z.string().optional(),
+  /** Convert HTML bodies to plain text and drop quoted history (5-10× smaller). */
+  stripHtml: z.boolean().default(false),
+  /** Only threads created at/after this ISO-8601 timestamp. */
+  since: z.string().optional(),
+  /** Keep only the newest N threads (after `since`). */
+  maxThreads: z.number().int().min(1).max(200).optional(),
 });
 
 export const GetOriginalSourceInputSchema = z.object({
@@ -210,6 +216,14 @@ export const CreateReplyInputSchema = z.object({
   status: z.enum(['active', 'closed', 'pending']).optional(),
   cc: z.array(z.string().email()).optional(),
   bcc: z.array(z.string().email()).optional(),
+  /** When a reply draft already exists: overwrite its text instead of refusing. */
+  replaceExistingDraft: z.boolean().default(false),
+});
+
+export const UpdateReplyDraftInputSchema = z.object({
+  conversationId: z.string().regex(/^\d+$/, 'Conversation ID must be numeric'),
+  text: z.string().min(1, 'Draft text is required'),
+  threadId: z.string().regex(/^\d+$/, 'Thread ID must be numeric').optional(),
 });
 
 export const CreateNoteInputSchema = z.object({
@@ -477,6 +491,7 @@ export type Organization = z.infer<typeof OrganizationSchema>;
 export type SearchInboxesInput = z.infer<typeof SearchInboxesInputSchema>;
 export type SearchConversationsInput = z.infer<typeof SearchConversationsInputSchema>;
 export type GetThreadsInput = z.infer<typeof GetThreadsInputSchema>;
+export type UpdateReplyDraftInput = z.infer<typeof UpdateReplyDraftInputSchema>;
 export type GetConversationSummaryInput = z.infer<typeof GetConversationSummaryInputSchema>;
 export type AdvancedConversationSearchInput = z.infer<typeof AdvancedConversationSearchInputSchema>;
 export type MultiStatusConversationSearchInput = z.infer<typeof MultiStatusConversationSearchInputSchema>;

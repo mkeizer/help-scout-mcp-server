@@ -341,11 +341,15 @@ export class HelpScoutClient {
         // Namespace per tenant — zonder dit zou de gedeelde LRU data van de ene
         // gebruiker aan de andere kunnen serveren.
         const cacheKey = `${this.cacheNamespace}:GET:${endpoint}`;
-        const cachedResult = cache.get(cacheKey, params);
+        // noCache: read-your-writes for callers that just mutated (draft-guard).
+        const cachedResult = cacheOptions?.noCache ? undefined : cache.get(cacheKey, params);
         if (cachedResult) {
             return cachedResult;
         }
         const response = await this.executeWithRetry(() => this.client.get(endpoint, { params }));
+        if (cacheOptions?.noCache) {
+            return response.data;
+        }
         if (cacheOptions?.ttl || cacheOptions?.ttl === 0) {
             cache.set(cacheKey, params, response.data, { ttl: cacheOptions.ttl });
         }

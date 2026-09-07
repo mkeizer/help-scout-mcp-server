@@ -1,6 +1,22 @@
 import { ErrorSchema } from '../schema/types.js';
 import { logger } from './logger.js';
 /**
+ * Thrown by the outbound customer-mail format gate (createReply,
+ * createConversation, updateReplyDraft). Carries machine-readable violations
+ * so any MCP client can auto-repair and retry without regexing prose.
+ * Improve hsmcp #95.
+ */
+export class FormatPolicyError extends Error {
+    constructor(tool, violations) {
+        super(`${tool}: blocked by server format policy (${violations.length} violation${violations.length === 1 ? '' : 's'}): ` +
+            violations.map(v => `${v.rule}: ${JSON.stringify(v.value)}`).join('; '));
+        this.tool = tool;
+        this.violations = violations;
+        this.code = 'FORMAT_POLICY_BLOCKED';
+        this.name = 'FormatPolicyError';
+    }
+}
+/**
  * Creates a standardized MCP error response for tool calls
  */
 export function createMcpToolError(error, context) {
@@ -56,6 +72,36 @@ export function createMcpToolError(error, context) {
                                 message: issue.message,
                                 code: issue.code,
                             })),
+                            requestId,
+                        },
+                    }, null, 2),
+                },
+            ],
+            isError: true,
+        };
+    }
+    // Format-policy rejections: distinct code + structured violations (hsmcp #95)
+    if (error instanceof FormatPolicyError) {
+        logger.warn('MCP tool blocked by format policy', {
+            requestId,
+            toolName,
+            tool: error.tool,
+            violations: error.violations,
+            duration,
+        });
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        error: {
+                            code: error.code,
+                            message: error.message,
+                            type: 'format_policy_error',
+                            tool: error.tool,
+                            violations: error.violations,
+                            retryable: true,
+                            hint: 'Fix every listed violation in the body and call the tool again. Rule ids are stable; `value` is the exact text that matched.',
                             requestId,
                         },
                     }, null, 2),

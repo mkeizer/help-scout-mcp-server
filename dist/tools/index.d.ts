@@ -7,6 +7,13 @@ import { Tool, CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk
  * fallback. .eml and plain-text logs are ASCII-heavy; binary formats are not.
  */
 export declare function resolveAttachmentFormat(buf: Buffer, requested: 'auto' | 'text' | 'base64'): 'text' | 'base64';
+/**
+ * HTML thread body → compact plain text. Drops quoted history (blockquote,
+ * Gmail/Outlook quote containers), converts <br>/<p> to newlines, strips the
+ * remaining tags and decodes common entities. Same idea as hs-thread.sh, plus
+ * quote-stripping. Improve hsmcp #419/#420.
+ */
+export declare function htmlToPlainText(html: string): string;
 export declare class ToolHandler {
     private callHistory;
     private currentUserQuery?;
@@ -32,6 +39,13 @@ export declare class ToolHandler {
     private searchConversations;
     private getConversationSummary;
     private getThreads;
+    /**
+     * Newest reply draft (state=draft, type=message) on a conversation, or null.
+     * Always bypasses the cache: this is read-your-writes for the draft-guard.
+     */
+    private findReplyDraft;
+    private patchDraftText;
+    private updateReplyDraft;
     private getAttachment;
     private getOriginalSource;
     private getServerTime;

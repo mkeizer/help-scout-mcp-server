@@ -454,11 +454,12 @@ export class HelpScoutClient {
     };
   }
 
-  async get<T>(endpoint: string, params?: Record<string, unknown>, cacheOptions?: { ttl?: number }): Promise<T> {
+  async get<T>(endpoint: string, params?: Record<string, unknown>, cacheOptions?: { ttl?: number; noCache?: boolean }): Promise<T> {
     // Namespace per tenant — zonder dit zou de gedeelde LRU data van de ene
     // gebruiker aan de andere kunnen serveren.
     const cacheKey = `${this.cacheNamespace}:GET:${endpoint}`;
-    const cachedResult = cache.get<T>(cacheKey, params);
+    // noCache: read-your-writes for callers that just mutated (draft-guard).
+    const cachedResult = cacheOptions?.noCache ? undefined : cache.get<T>(cacheKey, params);
     
     if (cachedResult) {
       return cachedResult;
@@ -468,6 +469,9 @@ export class HelpScoutClient {
       this.client.get<T>(endpoint, { params })
     );
     
+    if (cacheOptions?.noCache) {
+      return response.data;
+    }
     if (cacheOptions?.ttl || cacheOptions?.ttl === 0) {
       cache.set(cacheKey, params, response.data, { ttl: cacheOptions.ttl });
     } else {

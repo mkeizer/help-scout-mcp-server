@@ -18,7 +18,7 @@ import { handleOauthRoute, authenticateOauthToken, send401WithResourceMetadata }
 import { requestContext, clientForUser } from './saas/context.js';
 /** Tools die alleen met write-scope mogen (en in tools/list verborgen worden zonder die scope). */
 const WRITE_TOOLS = new Set([
-    'createConversation', 'createReply', 'createNote',
+    'createConversation', 'createReply', 'createNote', 'updateReplyDraft',
     'updateConversationStatus', 'updateConversationTags',
     'createDocsArticle', 'updateDocsArticle', 'deleteDocsArticle',
 ]);
@@ -38,7 +38,7 @@ export class HelpScoutMCPServer {
     buildServer() {
         const server = new Server({
             name: 'helpscout-search',
-            version: '1.7.0',
+            version: '1.10.0',
         }, {
             capabilities: {
                 resources: {},

@@ -74,6 +74,7 @@ export declare class HelpScoutClient {
     private transformError;
     get<T>(endpoint: string, params?: Record<string, unknown>, cacheOptions?: {
         ttl?: number;
+        noCache?: boolean;
     }): Promise<T>;
     private getDefaultCacheTtl;
     post<T>(endpoint: string, data: Record<string, unknown>): Promise<T>;

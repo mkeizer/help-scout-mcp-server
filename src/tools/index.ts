@@ -1,6 +1,6 @@
 import { Tool, CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { PaginatedResponse, helpScoutClient } from '../utils/helpscout-client.js';
-import { createMcpToolError, isApiError } from '../utils/mcp-errors.js';
+import { createMcpToolError, isApiError, FormatPolicyError, type FormatViolation } from '../utils/mcp-errors.js';
 import { HelpScoutAPIConstraints, ToolCallContext } from '../utils/api-constraints.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../utils/config.js';
@@ -76,6 +76,7 @@ import {
   CreateNoteInputSchema,
   UpdateConversationStatusInputSchema,
   UpdateConversationTagsInputSchema,
+  UpdateReplyDraftInputSchema,
   GetOriginalSourceInputSchema,
 } from '../schema/types.js';
 import { reportToolHandler } from './reports.js';
@@ -134,20 +135,20 @@ export function resolveAttachmentFormat(
  * these rules now run server-side regardless of which agent calls the API.
  */
 function enforceCustomerMailFormatRules(text: string, tool: string): void {
-  const errors: string[] = [];
+  const violations: FormatViolation[] = [];
   const body = text || '';
   const bodyLower = body.toLowerCase();
 
   // 1. No em-dash
   if (body.includes('—')) {
-    errors.push("em-dash (—) present — use comma, period, or rephrase");
+    violations.push({ rule: 'em_dash', value: '—', hint: 'Use a comma, a period, or rephrase.' });
   }
 
   // 2. No forbidden signature/closing phrases (HS auto-appends signature)
   const forbidden = ['met vriendelijke groet', 'mocht je verder vragen', 'het keurigonline team', 'keurigonline support'];
   for (const phrase of forbidden) {
     if (bodyLower.includes(phrase)) {
-      errors.push(`forbidden phrase: "${phrase}" — Help Scout appends the signature automatically`);
+      violations.push({ rule: 'forbidden_phrase', value: phrase, hint: 'Help Scout appends the signature automatically; drop the closing line.' });
     }
   }
 
@@ -160,42 +161,37 @@ function enforceCustomerMailFormatRules(text: string, tool: string): void {
   const sigPattern = /(groet|groetjes|mvg|m\.?v\.?g\.?)[,.]?\s*(<br\s*\/?>\s*){0,4}\s*(maarten|wouter|ewoud|pablo|koos)\b/i;
   const sigHit = body.match(sigPattern);
   if (sigHit) {
-    errors.push(
-      `personal-name signature detected (${sigHit[0].replace(/\s+/g, ' ').slice(0, 60)}...) — ` +
-      `HS appends the colleague-signature automatically. Drop the closing line entirely; ` +
-      `the staff member who clicks 'Send' is who the customer sees as sender.`,
-    );
+    violations.push({
+      rule: 'personal_signature',
+      value: sigHit[0].replace(/\s+/g, ' ').slice(0, 60),
+      hint: 'Help Scout appends the colleague-signature automatically. Drop the closing line entirely; the staff member who clicks Send is who the customer sees as sender.',
+    });
   }
 
   // 3. No <p> tags (we use <br><br>)
-  if (/<\/?p[\s>]/i.test(body)) {
-    errors.push("<p> tag present — replies use <br><br>, not <p>");
+  const pTag = body.match(/<\/?p[\s>]/i);
+  if (pTag) {
+    violations.push({ rule: 'p_tag', value: pTag[0], hint: 'Replies use <br><br> for paragraph breaks, not <p>.' });
   }
 
   // 4. No markdown bold (use <strong>)
-  if (/\*\*[^*]+\*\*/.test(body)) {
-    errors.push("markdown **bold** present — use <strong>...</strong>");
+  const mdBold = body.match(/\*\*[^*]+\*\*/);
+  if (mdBold) {
+    violations.push({ rule: 'markdown_bold', value: mdBold[0].slice(0, 60), hint: 'Use <strong>...</strong>; markdown is not rendered.' });
   }
 
-  // 5. No u-form (KO is je-vorm)
-  for (const u of [' u ', ' u,', ' u.', ' uw ']) {
-    if (bodyLower.includes(u)) {
-      errors.push(`u-form usage detected (${JSON.stringify(u.trim())}) — KO is je-vorm`);
-      break;
-    }
-  }
-
-  // 6. No 'Softaculous' — KO uses Installatron. Softaculous in a KO customer
+  // 5. No 'Softaculous' — KO uses Installatron. Softaculous in a KO customer
   //    mail is almost always a hallucination ("ga naar Softaculous" while we
   //    actually have Installatron). Other product names (cPanel, Plesk,
   //    JetBackup, WHM) are legitimately mentionable in migration / prior-host
-  //    context, so they're NOT in this hard block — those stay a skill-level
-  //    soft check via memory/feedback_forbidden_products_and_labels.md.
-  if (/\bsoftaculous\b/i.test(body)) {
-    errors.push("forbidden product name 'softaculous' — KO uses Installatron. If you're describing a customer's prior host, rephrase to make that explicit.");
+  //    context, so they're NOT in this hard block — those stay a client-side
+  //    soft check.
+  const soft = body.match(/\bsoftaculous\b/i);
+  if (soft) {
+    violations.push({ rule: 'forbidden_product', value: soft[0], hint: "KeurigOnline uses Installatron. If you're describing a customer's prior host, rephrase to make that explicit." });
   }
 
-  // 7. No English labels in NL copy
+  // 6. No English labels in NL copy
   const labelPairs: [RegExp, string, string][] = [
     [/\bPackage\b/, 'Package', 'Pakket'],
     [/\bAccount Settings\b/, 'Account Settings', 'Accountinstellingen'],
@@ -206,24 +202,59 @@ function enforceCustomerMailFormatRules(text: string, tool: string): void {
   ];
   for (const [pat, en, nl] of labelPairs) {
     if (pat.test(body)) {
-      errors.push(`English label '${en}' in NL copy — use '${nl}'`);
+      violations.push({ rule: 'english_label', value: en, hint: `Use the Dutch label '${nl}'.` });
     }
   }
 
-  // 8. No <h1>-<h6> tags (skills use <strong> for emphasis, never headings — they break HS's email rendering)
-  if (/<h[1-6][\s>]/i.test(body)) {
-    errors.push("<h1>-<h6> heading tag present — use <strong>...</strong> for emphasis, headings break HS rendering");
+  // 7. No <h1>-<h6> tags (use <strong> for emphasis, never headings — they break HS's email rendering)
+  const heading = body.match(/<h[1-6][\s>]/i);
+  if (heading) {
+    violations.push({ rule: 'heading_tag', value: heading[0], hint: 'Use <strong>...</strong> for emphasis; heading tags break Help Scout rendering.' });
   }
 
-  if (errors.length > 0) {
-    throw new Error(
-      `${tool}: BLOCKED by server format policy. Fix these before retrying:\n` +
-      errors.map(e => `  - ${e}`).join('\n') +
-      `\n(See memory/feedback_forbidden_products_and_labels.md and skill pre-send gate. ` +
-      `If using a Support Rep outbound/reply skill, the Step 4 gate should have caught this — ` +
-      `you may have skipped that step or are calling from outside the skill.)`
-    );
+  if (violations.length > 0) {
+    // Structured error (code FORMAT_POLICY_BLOCKED + violations[]) — see
+    // createMcpToolError. Error text is deliberately client-agnostic.
+    throw new FormatPolicyError(tool, violations);
   }
+}
+
+/**
+ * Decode HTML entities that agents pre-escape by mistake (`&lt;br&gt;`).
+ * JSON transport already handles escaping; HS would render the entities as
+ * literal text. Only triggers when an escaped *tag* is present.
+ */
+function decodePreEscapedTags(text: string, tool: string): string {
+  const escapedTagPattern = /&lt;\/?(?:p|strong|em|br|ul|ol|li|code|pre|a|h[1-6]|div|span)\b/i;
+  if (!escapedTagPattern.test(text)) return text;
+  logger.warn(`${tool}: auto-decoding HTML entities in body (agent pre-escaped tags)`);
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * HTML thread body → compact plain text. Drops quoted history (blockquote,
+ * Gmail/Outlook quote containers), converts <br>/<p> to newlines, strips the
+ * remaining tags and decodes common entities. Same idea as hs-thread.sh, plus
+ * quote-stripping. Improve hsmcp #419/#420.
+ */
+export function htmlToPlainText(html: string): string {
+  let s = html || '';
+  s = s.replace(/<(style|script)[\s\S]*?<\/\1>/gi, '');
+  s = s.replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '\n[quoted earlier message removed]\n');
+  s = s.replace(/<div[^>]*class="[^"]*\b(gmail_quote|moz-cite-prefix|OutlookMessageHeader|yahoo_quoted)\b[^"]*"[\s\S]*$/i, '\n[quoted earlier message removed]\n');
+  s = s.replace(/<div[^>]*id="[^"]*\b(appendonsend|divRplyFwdMsg)\b[^"]*"[\s\S]*$/i, '\n[quoted earlier message removed]\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/(p|div|li|tr|h[1-6]|blockquote|pre)>/gi, '\n');
+  s = s.replace(/<li[\s>]/gi, '- <li ');
+  s = s.replace(/<[^>]+>/g, '');
+  s = s.replace(/&nbsp;/gi, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_m, n) => String.fromCodePoint(Number(n))).replace(/&amp;/g, '&');
+  s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim();
+  return s;
 }
 
 export class ToolHandler {
@@ -388,13 +419,28 @@ export class ToolHandler {
       },
       {
         name: 'getThreads',
-        description: 'Retrieve full message history for a conversation. Returns all thread messages.',
+        description: 'Retrieve full message history for a conversation. Returns all thread messages. Long tickets can be 50-100 KB of HTML: pass `stripHtml: true` (plain text, quoted history removed, 5-10× smaller) and/or `since` / `maxThreads` to fetch only what you need. The response reports `totalThreads` and `truncated` so you know what was left out.',
         inputSchema: {
           type: 'object',
           properties: {
             conversationId: {
               type: 'string',
               description: 'The conversation ID to get threads for',
+            },
+            stripHtml: {
+              type: 'boolean',
+              description: 'Convert each thread body to compact plain text and drop quoted earlier messages. Recommended for triage.',
+              default: false,
+            },
+            since: {
+              type: 'string',
+              description: 'ISO-8601 timestamp; only threads created at or after this moment are returned (e.g. "2026-09-01T00:00:00Z").',
+            },
+            maxThreads: {
+              type: 'number',
+              description: 'Keep only the newest N threads (applied after `since`). Older threads are dropped and `truncated` is set.',
+              minimum: 1,
+              maximum: 200,
             },
             limit: {
               type: 'number',
@@ -655,8 +701,22 @@ export class ToolHandler {
             status: { type: 'string', enum: ['active', 'closed', 'pending'], description: 'Set conversation status when reply is sent. For drafts, status is applied when the draft is sent from the UI.' },
             cc: { type: 'array', items: { type: 'string' }, description: 'CC email addresses' },
             bcc: { type: 'array', items: { type: 'string' }, description: 'BCC email addresses' },
+            replaceExistingDraft: { type: 'boolean', description: 'If a reply draft already exists on the conversation, overwrite its text instead of refusing (default false: the call is rejected with DRAFT_EXISTS and the existing threadId).', default: false },
           },
           required: ['conversationId', 'text', 'customer'],
+        },
+      },
+      {
+        name: 'updateReplyDraft',
+        description: 'Replace the text of an existing reply draft on a conversation (PATCH thread). Use this instead of createReply when a draft is already present, so a ticket never accumulates multiple competing drafts. Finds the newest reply draft automatically unless `threadId` is given. Same format policy as createReply.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: { type: 'string', description: 'The conversation ID whose draft to update' },
+            text: { type: 'string', description: 'New draft body (HTML supported, <br><br> for paragraphs)' },
+            threadId: { type: 'string', description: 'Optional: the draft thread ID to update. Omit to use the newest reply draft.' },
+          },
+          required: ['conversationId', 'text'],
         },
       },
       {
@@ -1105,6 +1165,9 @@ export class ToolHandler {
           break;
         case 'createNote':
           result = await this.createNote(request.params.arguments || {});
+          break;
+        case 'updateReplyDraft':
+          result = await this.updateReplyDraft(request.params.arguments || {});
           break;
         case 'updateConversationStatus':
           result = await this.updateConversationStatus(request.params.arguments || {});
@@ -1630,12 +1693,34 @@ export class ToolHandler {
     );
 
     const threads = response._embedded?.threads || [];
-    
+    const totalThreads = threads.length;
+
+    // Slimming (improve hsmcp #419/#420): since-filter, newest-N, plain text.
+    let selected = threads;
+    if (input.since) {
+      const sinceMs = Date.parse(input.since);
+      if (Number.isNaN(sinceMs)) {
+        throw new Error(`getThreads: \`since\` must be an ISO-8601 timestamp, got ${JSON.stringify(input.since)}`);
+      }
+      selected = selected.filter(t => Date.parse(t.createdAt) >= sinceMs);
+    }
+    if (input.maxThreads && selected.length > input.maxThreads) {
+      selected = [...selected]
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .slice(0, input.maxThreads);
+    }
+
     // Redact PII if configured
-    const processedThreads = threads.map(thread => ({
-      ...thread,
-      body: config.security.allowPii ? thread.body : PII_REDACTED_BODY,
-    }));
+    const processedThreads = selected.map(thread => {
+      const body = config.security.allowPii
+        ? (input.stripHtml ? htmlToPlainText(thread.body) : thread.body)
+        : PII_REDACTED_BODY;
+      if (!input.stripHtml) return { ...thread, body };
+      // Plain-text mode: drop HATEOAS links too — pure bulk for an agent.
+      const rest: Record<string, unknown> = { ...thread, body };
+      delete rest._links;
+      return rest;
+    });
 
     return {
       content: [
@@ -1644,11 +1729,82 @@ export class ToolHandler {
           text: JSON.stringify({
             conversationId: input.conversationId,
             threads: processedThreads,
+            totalThreads,
+            returnedThreads: processedThreads.length,
+            truncated: processedThreads.length < totalThreads,
+            ...(input.stripHtml || input.since || input.maxThreads
+              ? { filters: { stripHtml: input.stripHtml, since: input.since ?? null, maxThreads: input.maxThreads ?? null } }
+              : {}),
             pagination: response.page,
             nextCursor: response._links?.next?.href,
           }, null, 2),
         },
       ],
+    };
+  }
+
+  /**
+   * Newest reply draft (state=draft, type=message) on a conversation, or null.
+   * Always bypasses the cache: this is read-your-writes for the draft-guard.
+   */
+  private async findReplyDraft(conversationId: string): Promise<Thread | null> {
+    const response = await helpScoutClient.get<PaginatedResponse<Thread>>(
+      `/conversations/${conversationId}/threads`,
+      { page: 1, size: TOOL_CONSTANTS.MAX_THREAD_SIZE },
+      { noCache: true },
+    );
+    const drafts = (response._embedded?.threads || [])
+      .filter(t => t.state === 'draft' && t.type === 'message')
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    return drafts[0] ?? null;
+  }
+
+  private async patchDraftText(conversationId: string, threadId: string | number, text: string): Promise<void> {
+    await helpScoutClient.patch(
+      `/conversations/${conversationId}/threads/${threadId}`,
+      { op: 'replace', path: '/text', value: text },
+    );
+  }
+
+  private async updateReplyDraft(args: unknown): Promise<CallToolResult> {
+    const input = UpdateReplyDraftInputSchema.parse(args);
+    const text = decodePreEscapedTags(input.text, 'updateReplyDraft');
+    enforceCustomerMailFormatRules(text, 'updateReplyDraft');
+
+    let threadId = input.threadId;
+    if (!threadId) {
+      const draft = await this.findReplyDraft(input.conversationId);
+      if (!draft) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: {
+                code: 'NO_DRAFT',
+                message: `No reply draft found on conversation ${input.conversationId}. Use createReply to create one.`,
+                conversationId: input.conversationId,
+              },
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      threadId = String(draft.id);
+    }
+
+    await this.patchDraftText(input.conversationId, threadId, text);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          threadId,
+          action: 'draft_updated',
+          message: 'Draft reply text replaced. Review and send it from the Help Scout UI.',
+        }, null, 2),
+      }],
     };
   }
 
@@ -2441,21 +2597,54 @@ export class ToolHandler {
     // sees garbage.
     // Reference incident KEU-X / 2026-05-06 (HS#1291643): koos-account agent
     // sent a draft with `&lt;br&gt;&lt;br&gt;` + `&lt;strong&gt;` throughout.
-    let replyText = input.text;
-    const escapedTagPattern = /&lt;\/?(?:p|strong|em|br|ul|ol|li|code|pre|a|h[1-6]|div|span)\b/i;
-    if (escapedTagPattern.test(replyText)) {
-      logger.warn('createReply: auto-decoding HTML entities in body (agent pre-escaped tags)');
-      replyText = replyText
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&amp;/g, '&');
-    }
+    const replyText = decodePreEscapedTags(input.text, 'createReply');
 
     // Format gate — see createConversation above. Run AFTER entity-decode so
     // the gate sees the actual rendered HTML, not the escaped version.
     enforceCustomerMailFormatRules(replyText, 'createReply');
+
+    // Draft-guard (improve hsmcp #530/#531): Help Scout has no API to delete a
+    // thread, so a second createReply leaves two competing drafts on the ticket
+    // that only a human can clean up. One reply draft per conversation.
+    const existing = await this.findReplyDraft(input.conversationId);
+    if (existing) {
+      if (!input.replaceExistingDraft) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: {
+                code: 'DRAFT_EXISTS',
+                message: `Conversation ${input.conversationId} already has a reply draft (thread ${existing.id}, created ${existing.createdAt}). ` +
+                  'Drafts cannot be deleted via the API, so a second draft was not created. ' +
+                  'Call updateReplyDraft to replace its text, or createReply with replaceExistingDraft:true.',
+                conversationId: input.conversationId,
+                existingDraft: {
+                  threadId: String(existing.id),
+                  createdAt: existing.createdAt,
+                  createdBy: (existing as { createdBy?: { email?: string; type?: string } }).createdBy ?? null,
+                  preview: htmlToPlainText(existing.body).slice(0, 300),
+                },
+              },
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      }
+      await this.patchDraftText(input.conversationId, existing.id, replyText);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            conversationId: input.conversationId,
+            threadId: String(existing.id),
+            action: 'draft_updated',
+            message: 'Existing draft reply replaced (replaceExistingDraft). Review and send it from the Help Scout UI.',
+          }, null, 2),
+        }],
+      };
+    }
 
     const body: Record<string, unknown> = {
       customer: { email: input.customer },
